@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "units": {
+    "linearSpeed": "m/s",
+    "linearAcceleration": "m/s^2",
+    "angularSpeed": "deg/s",
+    "angularAcceleration": "deg/s^2",
+    "dimensions": "m"
+  },
+  "robotGroups": {
+    "fork": {
+      "dimensions": {
+        "length": 2.0,
+        "width": 1.0
+      },
+      "unloaded": {
+        "maxForwardSpeed": 2.0,
+        "maxReverseSpeed": 1.0,
+        "maxAcceleration": 1.0,
+        "maxDeceleration": 1.0,
+        "maxRotationSpeed": 90.0,
+        "maxRotationAcceleration": 120.0,
+        "maxRotationDeceleration": 90.0
+      },
+      "loaded": {
+        "maxForwardSpeed": 2.0,
+        "maxReverseSpeed": 1.0,
+        "maxAcceleration": 0.5,
+        "maxDeceleration": 0.5,
+        "maxRotationSpeed": 90.0,
+        "maxRotationAcceleration": 60.0,
+        "maxRotationDeceleration": 60.0
+      }
+    },
+    "jack": {
+      "dimensions": {
+        "length": 1.0,
+        "width": 0.5
+      },
+      "unloaded": {
+        "maxForwardSpeed": 2.0,
+        "maxReverseSpeed": 1.0,
+        "maxAcceleration": 1.0,
+        "maxDeceleration": 1.0,
+        "maxRotationSpeed": 90.0,
+        "maxRotationAcceleration": 120.0,
+        "maxRotationDeceleration": 90.0
+      },
+      "loaded": {
+        "maxForwardSpeed": 2.0,
+        "maxReverseSpeed": 1.0,
+        "maxAcceleration": 0.5,
+        "maxDeceleration": 0.5,
+        "maxRotationSpeed": 90.0,
+        "maxRotationAcceleration": 60.0,
+        "maxRotationDeceleration": 60.0
+      }
+    }
+  },
+  "simulationSafety": {
+    "footprintMargin": 0.0,
+    "localizationError": null,
+    "communicationLatency": null,
+    "provisional": true,
+    "note": "当前先生成车辆真实外形的基础冲突；定位误差、通信延迟和额外安全边距确认后再膨胀。"
+  }
+}

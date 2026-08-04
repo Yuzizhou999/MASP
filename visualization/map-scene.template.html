@@ -1,0 +1,454 @@
+<div id="xiate-map-scene">
+  <style>
+    #xiate-map-scene {
+      width: 100%;
+      color: var(--foreground);
+      --scene-background: var(--accent);
+      --scene-foreground: var(--accent-foreground);
+    }
+
+    #xiate-map-scene .scene-summary,
+    #xiate-map-scene .scene-legend {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.45rem 0.9rem;
+    }
+
+    #xiate-map-scene .scene-summary {
+      justify-content: space-between;
+      margin-bottom: 0.45rem;
+    }
+
+    #xiate-map-scene .scene-legend {
+      color: var(--muted-foreground);
+    }
+
+    #xiate-map-scene .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      white-space: nowrap;
+    }
+
+    #xiate-map-scene .legend-dot {
+      width: 0.7rem;
+      height: 0.7rem;
+      border-radius: 999px;
+      background: var(--legend-color);
+    }
+
+    #xiate-map-scene .scene-stage {
+      position: relative;
+      width: 100%;
+      height: clamp(430px, 76vw, 720px);
+      overflow: hidden;
+    }
+
+    #xiate-map-scene .scene-svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      user-select: none;
+      cursor: grab;
+    }
+
+    #xiate-map-scene .scene-svg.is-panning {
+      cursor: grabbing;
+    }
+
+    #xiate-map-scene .map-grid {
+      stroke: var(--scene-foreground);
+      stroke-width: 0.08;
+      opacity: 0.1;
+    }
+
+    #xiate-map-scene .scene-backdrop {
+      fill: var(--scene-background);
+    }
+
+    #xiate-map-scene .background-cloud {
+      fill: none;
+      stroke: var(--scene-foreground);
+      stroke-width: 0.16;
+      stroke-linecap: round;
+      opacity: 0.3;
+      pointer-events: none;
+    }
+
+    #xiate-map-scene .route {
+      fill: none;
+      stroke: var(--scene-foreground);
+      stroke-width: 0.24;
+      opacity: 0.8;
+      vector-effect: non-scaling-stroke;
+      pointer-events: none;
+    }
+
+    #xiate-map-scene .route-hit {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 1.25;
+      vector-effect: non-scaling-stroke;
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+
+    #xiate-map-scene .route.reverse-motion {
+      stroke-dasharray: 0.55 0.38;
+    }
+
+    #xiate-map-scene .route:hover,
+    #xiate-map-scene .route.is-selected,
+    #xiate-map-scene .route.is-connected {
+      stroke: var(--viz-series-1);
+      opacity: 1;
+    }
+
+    #xiate-map-scene .route.is-selected {
+      stroke-width: 0.48;
+    }
+
+    #xiate-map-scene .node {
+      cursor: pointer;
+    }
+
+    #xiate-map-scene .node-mark {
+      stroke-width: 0.16;
+      vector-effect: non-scaling-stroke;
+    }
+
+    #xiate-map-scene .node-lm .node-mark {
+      fill: color-mix(in srgb, var(--viz-series-1) 38%, transparent);
+      stroke: var(--viz-series-1);
+    }
+
+    #xiate-map-scene .node-ap .node-mark {
+      fill: color-mix(in srgb, var(--viz-series-2) 45%, transparent);
+      stroke: var(--viz-series-2);
+    }
+
+    #xiate-map-scene .node-pp .node-mark {
+      fill: color-mix(in srgb, var(--viz-series-3) 48%, transparent);
+      stroke: var(--viz-series-3);
+    }
+
+    #xiate-map-scene .node-cp .node-mark {
+      fill: color-mix(in srgb, var(--viz-series-4) 48%, transparent);
+      stroke: var(--viz-series-4);
+    }
+
+    #xiate-map-scene .node:hover .node-mark,
+    #xiate-map-scene .node.is-selected .node-mark {
+      fill: var(--scene-foreground);
+      stroke: var(--scene-background);
+    }
+
+    #xiate-map-scene .node-label {
+      fill: var(--scene-foreground);
+      paint-order: stroke;
+      stroke: var(--scene-background);
+      stroke-width: 0.42;
+      stroke-linejoin: round;
+      font-weight: 500;
+      pointer-events: none;
+    }
+
+    #xiate-map-scene .node-label.lm-label {
+      opacity: 0;
+    }
+
+    #xiate-map-scene .show-lm-labels .node-label.lm-label,
+    #xiate-map-scene .node:hover .node-label,
+    #xiate-map-scene .node.is-selected .node-label {
+      opacity: 1;
+    }
+
+    #xiate-map-scene .scene-detail {
+      min-height: 1.5rem;
+      margin-top: 0.45rem;
+      color: var(--muted-foreground);
+    }
+
+    @media (max-width: 480px) {
+      #xiate-map-scene .scene-summary {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      #xiate-map-scene .scene-stage {
+        height: 470px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #xiate-map-scene * {
+        scroll-behavior: auto;
+      }
+    }
+  </style>
+
+  <div class="scene-summary text-small">
+    <div id="xiate-scene-stats"></div>
+    <div class="scene-legend" aria-label="节点类型图例">
+      <span class="legend-item"><span class="legend-dot" style="--legend-color:var(--viz-series-1)"></span>LM 路径点</span>
+      <span class="legend-item"><span class="legend-dot" style="--legend-color:var(--viz-series-2)"></span>AP 作业点</span>
+      <span class="legend-item"><span class="legend-dot" style="--legend-color:var(--viz-series-3)"></span>PP 停车点</span>
+      <span class="legend-item"><span class="legend-dot" style="--legend-color:var(--viz-series-4)"></span>CP 充电点</span>
+    </div>
+  </div>
+
+  <div class="scene-stage">
+    <svg id="xiate-scene-svg" class="scene-svg" role="img" aria-labelledby="xiate-scene-title xiate-scene-desc" preserveAspectRatio="xMidYMid meet">
+      <title id="xiate-scene-title">XiaTe 实际地图路网场景</title>
+      <desc id="xiate-scene-desc">环境轮廓、242 个调度节点和 380 条有向贝塞尔路线。拖拽平移，滚轮缩放，点击节点或路线查看详情。</desc>
+      <defs>
+        <pattern id="xiate-grid-pattern" width="5" height="5" patternUnits="userSpaceOnUse">
+          <path class="map-grid" d="M 5 0 L 0 0 0 5"></path>
+        </pattern>
+        <marker id="xiate-route-arrow" markerWidth="5" markerHeight="5" refX="7" refY="2.5" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="var(--scene-foreground)"></path>
+        </marker>
+        <marker id="xiate-route-arrow-selected" markerWidth="5" markerHeight="5" refX="7" refY="2.5" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="var(--viz-series-1)"></path>
+        </marker>
+      </defs>
+      <g id="xiate-scene-world">
+        <rect id="xiate-scene-backdrop" class="scene-backdrop"></rect>
+        <rect id="xiate-scene-grid" fill="url(#xiate-grid-pattern)"></rect>
+        <path id="xiate-background-cloud" class="background-cloud"></path>
+        <g id="xiate-scene-route-hits"></g>
+        <g id="xiate-scene-routes"></g>
+        <g id="xiate-scene-nodes"></g>
+      </g>
+    </svg>
+  </div>
+
+  <div id="xiate-scene-detail" class="scene-detail text-small" aria-live="polite">拖拽平移 · 滚轮缩放 · 双击复位 · 点击节点或路线查看详情</div>
+  <script type="application/json" id="xiate-map-model-data">__XIATE_MAP_MODEL_JSON__</script>
+
+  <script>
+    (() => {
+      const root = document.getElementById("xiate-map-scene");
+      const svg = document.getElementById("xiate-scene-svg");
+      const backdrop = document.getElementById("xiate-scene-backdrop");
+      const grid = document.getElementById("xiate-scene-grid");
+      const background = document.getElementById("xiate-background-cloud");
+      const routeHitsGroup = document.getElementById("xiate-scene-route-hits");
+      const routesGroup = document.getElementById("xiate-scene-routes");
+      const nodesGroup = document.getElementById("xiate-scene-nodes");
+      const detail = document.getElementById("xiate-scene-detail");
+      const stats = document.getElementById("xiate-scene-stats");
+      const model = JSON.parse(document.getElementById("xiate-map-model-data").textContent);
+      const svgNs = "http://www.w3.org/2000/svg";
+      const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+      const incoming = new Map(model.nodes.map((node) => [node.id, 0]));
+      const outgoing = new Map(model.nodes.map((node) => [node.id, 0]));
+      const nodeElements = new Map();
+      const edgeElements = new Map();
+
+      model.edges.forEach((edge) => {
+        outgoing.set(edge.start, (outgoing.get(edge.start) || 0) + 1);
+        incoming.set(edge.end, (incoming.get(edge.end) || 0) + 1);
+      });
+
+      stats.textContent = `${model.stats.nodeCount} 个节点 · ${model.stats.edgeCount} 条有向路径 · ${model.stats.stronglyConnected ? "全图强连通" : "存在不可达区域"}`;
+
+      const bounds = model.metadata.bounds;
+      const padding = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) * 0.035;
+      const initialView = {
+        x: bounds.minX - padding,
+        y: -bounds.maxY - padding,
+        w: bounds.maxX - bounds.minX + padding * 2,
+        h: bounds.maxY - bounds.minY + padding * 2,
+      };
+      let view = { ...initialView };
+      let panState = null;
+      let selectedElement = null;
+
+      function createSvgElement(name, attributes = {}) {
+        const element = document.createElementNS(svgNs, name);
+        Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, String(value)));
+        return element;
+      }
+
+      function applyView() {
+        svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+        const zoom = initialView.w / view.w;
+        root.classList.toggle("show-lm-labels", zoom > 2.35);
+      }
+
+      function clearSelection() {
+        if (selectedElement) {
+          selectedElement.classList.remove("is-selected");
+          if (selectedElement.classList.contains("route")) {
+            selectedElement.setAttribute("marker-end", "url(#xiate-route-arrow)");
+          }
+        }
+        edgeElements.forEach((element) => element.classList.remove("is-connected"));
+        selectedElement = null;
+      }
+
+      function selectNode(node, element) {
+        clearSelection();
+        selectedElement = element;
+        element.classList.add("is-selected");
+        model.edges.forEach((edge) => {
+          if (edge.start === node.id || edge.end === node.id) {
+            edgeElements.get(edge.id).classList.add("is-connected");
+          }
+        });
+        detail.textContent = `${node.id} · ${node.className} · 坐标 (${node.x.toFixed(3)}, ${node.y.toFixed(3)}) · 入 ${incoming.get(node.id)} / 出 ${outgoing.get(node.id)}`;
+      }
+
+      function selectEdge(edge, element) {
+        clearSelection();
+        selectedElement = element;
+        element.classList.add("is-selected");
+        element.setAttribute("marker-end", "url(#xiate-route-arrow-selected)");
+        const movement = edge.motionDirection === 1 ? "倒向行驶" : "正向行驶";
+        detail.textContent = `${edge.start} → ${edge.end} · ${edge.length.toFixed(2)} m · ${movement}${edge.maxSpeed == null ? "" : ` · 限速 ${edge.maxSpeed}`}`;
+      }
+
+      [backdrop, grid].forEach((element) => {
+        element.setAttribute("x", initialView.x);
+        element.setAttribute("y", initialView.y);
+        element.setAttribute("width", initialView.w);
+        element.setAttribute("height", initialView.h);
+      });
+
+      const step = model.background.step;
+      const cloudCommands = [];
+      model.background.cells.forEach(([cellX, cellY]) => {
+        const x = cellX * step;
+        const y = -cellY * step;
+        cloudCommands.push(`M${x.toFixed(2)},${y.toFixed(2)}h0.08`);
+      });
+      background.setAttribute("d", cloudCommands.join(""));
+
+      model.edges.forEach((edge) => {
+        const routeData = {
+          d: `M ${edge.p0[0]} ${-edge.p0[1]} C ${edge.p1[0]} ${-edge.p1[1]}, ${edge.p2[0]} ${-edge.p2[1]}, ${edge.p3[0]} ${-edge.p3[1]}`,
+          "data-edge-id": edge.id,
+          "data-start": edge.start,
+          "data-end": edge.end,
+        };
+        const path = createSvgElement("path", {
+          ...routeData,
+          class: `route${edge.motionDirection === 1 ? " reverse-motion" : ""}`,
+          "marker-end": "url(#xiate-route-arrow)",
+        });
+        const hitPath = createSvgElement("path", { ...routeData, class: "route-hit" });
+        const title = createSvgElement("title");
+        title.textContent = `${edge.start} 到 ${edge.end}，长度 ${edge.length.toFixed(2)} 米`;
+        path.appendChild(title);
+        hitPath.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectEdge(edge, path);
+        });
+        routeHitsGroup.appendChild(hitPath);
+        routesGroup.appendChild(path);
+        edgeElements.set(edge.id, path);
+      });
+
+      model.nodes.forEach((node) => {
+        const group = createSvgElement("g", {
+          class: `node node-${node.type.toLowerCase()}`,
+          "data-node-id": node.id,
+          transform: `translate(${node.x} ${-node.y})`,
+        });
+        const radius = node.type === "LM" ? 0.28 : 0.42;
+        const circle = createSvgElement("circle", { class: "node-mark", r: radius });
+        const title = createSvgElement("title");
+        title.textContent = `${node.id}，${node.className}`;
+        circle.appendChild(title);
+
+        const label = createSvgElement("text", {
+          class: `node-label${node.type === "LM" ? " lm-label" : ""}`,
+          x: radius + 0.22,
+          y: -radius - 0.18,
+          "font-size": node.type === "LM" ? 1.35 : 1.55,
+        });
+        label.textContent = node.id;
+
+        group.appendChild(circle);
+        group.appendChild(label);
+        group.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectNode(node, group);
+        });
+        nodesGroup.appendChild(group);
+        nodeElements.set(node.id, group);
+      });
+
+      function clientToMap(clientX, clientY) {
+        const rect = svg.getBoundingClientRect();
+        return {
+          x: view.x + ((clientX - rect.left) / rect.width) * view.w,
+          y: view.y + ((clientY - rect.top) / rect.height) * view.h,
+        };
+      }
+
+      svg.addEventListener("pointerdown", (event) => {
+        if (event.target.closest(".node, .route-hit")) return;
+        panState = {
+          pointerId: event.pointerId,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          viewX: view.x,
+          viewY: view.y,
+          viewW: view.w,
+          viewH: view.h,
+        };
+        svg.setPointerCapture(event.pointerId);
+        svg.classList.add("is-panning");
+      });
+
+      svg.addEventListener("pointermove", (event) => {
+        if (!panState || panState.pointerId !== event.pointerId) return;
+        const rect = svg.getBoundingClientRect();
+        const dx = ((event.clientX - panState.clientX) / rect.width) * panState.viewW;
+        const dy = ((event.clientY - panState.clientY) / rect.height) * panState.viewH;
+        view.x = panState.viewX - dx;
+        view.y = panState.viewY - dy;
+        applyView();
+      });
+
+      function endPan(event) {
+        if (!panState || panState.pointerId !== event.pointerId) return;
+        panState = null;
+        svg.classList.remove("is-panning");
+      }
+
+      svg.addEventListener("pointerup", endPan);
+      svg.addEventListener("pointercancel", endPan);
+
+      svg.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const anchor = clientToMap(event.clientX, event.clientY);
+        const factor = Math.exp(event.deltaY * 0.0012);
+        const nextWidth = Math.min(initialView.w * 1.3, Math.max(initialView.w / 28, view.w * factor));
+        const ratio = nextWidth / view.w;
+        const nextHeight = view.h * ratio;
+        view.x = anchor.x - (anchor.x - view.x) * ratio;
+        view.y = anchor.y - (anchor.y - view.y) * ratio;
+        view.w = nextWidth;
+        view.h = nextHeight;
+        applyView();
+      }, { passive: false });
+
+      svg.addEventListener("dblclick", () => {
+        view = { ...initialView };
+        applyView();
+      });
+
+      svg.addEventListener("click", () => {
+        clearSelection();
+        detail.textContent = "拖拽平移 · 滚轮缩放 · 双击复位 · 点击节点或路线查看详情";
+      });
+
+      applyView();
+    })();
+  </script>
+</div>
