@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masp.local/schemas/scheduler.schema.json",
+  "title": "MASP scheduler configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "mode",
+    "fleet",
+    "serviceDefaults",
+    "planner",
+    "traffic",
+    "safety",
+    "features"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "mode": {"enum": ["simulation", "real"]},
+    "fleet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixedDuringRun", "counts", "initialVehiclesFile"],
+      "properties": {
+        "fixedDuringRun": {"const": true},
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fork", "jack"],
+          "properties": {
+            "fork": {"type": "integer", "minimum": 0},
+            "jack": {"type": "integer", "minimum": 0}
+          }
+        },
+        "initialVehiclesFile": {"type": "string", "minLength": 1}
+      }
+    },
+    "serviceDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pickupServiceMs",
+        "dropoffServiceMs",
+        "workstationCapacity",
+        "blocksTransitDuringService",
+        "provisional"
+      ],
+      "properties": {
+        "pickupServiceMs": {"type": "integer", "minimum": 1},
+        "dropoffServiceMs": {"type": "integer", "minimum": 1},
+        "workstationCapacity": {"type": "integer", "minimum": 1},
+        "blocksTransitDuringService": {"type": "boolean"},
+        "provisional": {"type": "boolean"}
+      }
+    },
+    "planner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planningPeriodMs",
+        "planningHorizonMs",
+        "executionHorizonMs",
+        "planningTimeoutMs",
+        "provisional"
+      ],
+      "properties": {
+        "planningPeriodMs": {"type": "integer", "minimum": 1},
+        "planningHorizonMs": {"type": "integer", "minimum": 1},
+        "executionHorizonMs": {"type": "integer", "minimum": 1},
+        "planningTimeoutMs": {"type": "integer", "minimum": 1},
+        "provisional": {"type": "boolean"}
+      }
+    },
+    "traffic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wait", "reverse"],
+      "properties": {
+        "wait": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowOnLM",
+            "allowOnAP",
+            "allowOnPP",
+            "allowOnCP",
+            "maxPlannedWaitMs",
+            "shortTermOnly"
+          ],
+          "properties": {
+            "allowOnLM": {"type": "boolean"},
+            "allowOnAP": {"type": "boolean"},
+            "allowOnPP": {"type": "boolean"},
+            "allowOnCP": {"type": "boolean"},
+            "maxPlannedWaitMs": {"type": "integer", "minimum": 1},
+            "shortTermOnly": {"const": true}
+          }
+        },
+        "reverse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "alongCurrentEdgeAllowed",
+            "loadedAllowed",
+            "maxDistanceM",
+            "maxDurationMs",
+            "requiresAtomicReservation"
+          ],
+          "properties": {
+            "mode": {"enum": ["disabled", "map_edges_only", "recovery_only", "planned"]},
+            "alongCurrentEdgeAllowed": {"type": "boolean"},
+            "loadedAllowed": {"type": "boolean"},
+            "maxDistanceM": {"type": "number", "exclusiveMinimum": 0},
+            "maxDurationMs": {"type": "integer", "minimum": 1},
+            "requiresAtomicReservation": {"const": true}
+          }
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requireCompleteForRealMode",
+        "footprintMarginM",
+        "localizationErrorM",
+        "communicationLatencyMs",
+        "fixedClearanceM",
+        "guaranteedDecelerationMps2",
+        "reservationEntryBufferMs",
+        "reservationExitBufferMs",
+        "provisional"
+      ],
+      "properties": {
+        "requireCompleteForRealMode": {"const": true},
+        "footprintMarginM": {"type": ["number", "null"], "minimum": 0},
+        "localizationErrorM": {"type": ["number", "null"], "minimum": 0},
+        "communicationLatencyMs": {"type": ["integer", "null"], "minimum": 0},
+        "fixedClearanceM": {"type": ["number", "null"], "minimum": 0},
+        "guaranteedDecelerationMps2": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "reservationEntryBufferMs": {"type": ["integer", "null"], "minimum": 0},
+        "reservationExitBufferMs": {"type": ["integer", "null"], "minimum": 0},
+        "provisional": {"type": "boolean"}
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["batteryScheduling"],
+      "properties": {
+        "batteryScheduling": {"const": false}
+      }
+    }
+  }
+}

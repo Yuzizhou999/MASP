@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masp.local/schemas/plan.schema.json",
+  "title": "MASP phase 1 vehicle plan",
+  "description": "阶段 1 使用的显式车辆计划。此阶段只执行并验证计划，不负责自动找路。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "revision",
+    "vehicleId",
+    "taskId",
+    "basedOnVehicleRevision",
+    "basedOnWorldRevision",
+    "createdAtMs",
+    "horizonEndMs",
+    "committedUntilMs",
+    "segments"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 0},
+    "vehicleId": {"type": "string", "minLength": 1},
+    "taskId": {"type": "string", "minLength": 1},
+    "basedOnVehicleRevision": {"type": "integer", "minimum": 0},
+    "basedOnWorldRevision": {"type": "integer", "minimum": 0},
+    "createdAtMs": {"type": "integer", "minimum": 0},
+    "horizonEndMs": {"type": "integer", "minimum": 1},
+    "committedUntilMs": {"type": "integer", "minimum": 1},
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "startMs",
+          "endMs",
+          "startNodeId",
+          "endNodeId",
+          "expectedLoadState"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["traverse", "wait", "pickup", "dropoff"]},
+          "startMs": {"type": "integer", "minimum": 0},
+          "endMs": {"type": "integer", "minimum": 1},
+          "startNodeId": {"type": "string", "minLength": 1},
+          "endNodeId": {"type": "string", "minLength": 1},
+          "edgeId": {"type": ["string", "null"]},
+          "expectedLoadState": {"enum": ["empty", "loaded"]},
+          "resourceIds": {
+            "description": "可省略并由地图自动推导；若填写则不得缺少任何必需资源。",
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          },
+          "commandPayload": {"type": "object"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "traverse"}}},
+            "then": {"required": ["edgeId"]}
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masp.local/schemas/simulation-scenario.schema.json",
+  "title": "MASP phase 1 deterministic simulation scenario",
+  "description": "阶段 1 确定性仿真输入，包含参与车辆、持续任务和预先给定的执行计划。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scenarioId", "seed", "endTimeMs", "vehicles", "tasks", "plans"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "scenarioId": {"type": "string", "minLength": 1},
+    "seed": {"type": "integer", "minimum": 0},
+    "endTimeMs": {"type": "integer", "minimum": 1},
+    "vehicles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["vehicleId", "robotGroup", "initialNodeId", "initialHeadingRad", "initialLoadState"],
+        "properties": {
+          "vehicleId": {"type": "string", "minLength": 1},
+          "robotGroup": {"enum": ["fork", "jack"]},
+          "initialNodeId": {"type": "string", "minLength": 1},
+          "initialHeadingRad": {"type": "number", "minimum": -6.283186, "maximum": 6.283186},
+          "initialLoadState": {"enum": ["empty", "loaded"]},
+          "payloadId": {"type": ["string", "null"]},
+          "capabilities": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"initialLoadState": {"const": "loaded"}}},
+            "then": {"required": ["payloadId"]}
+          }
+        ]
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {"$ref": "https://masp.local/schemas/task.schema.json"}
+    },
+    "plans": {
+      "type": "array",
+      "items": {"$ref": "https://masp.local/schemas/plan.schema.json"}
+    }
+  }
+}

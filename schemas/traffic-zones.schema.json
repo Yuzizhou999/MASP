@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masp.local/schemas/traffic-zones.schema.json",
+  "title": "MASP traffic zones and recovery nodes",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recoveryNodes", "zones"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "recoveryNodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodeId", "allowedRobotGroups"],
+        "properties": {
+          "nodeId": {"type": "string", "minLength": 1},
+          "allowedRobotGroups": {
+            "type": "array",
+            "items": {"enum": ["fork", "jack"]},
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "zones": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "memberNodeIds",
+          "memberEdgeIds",
+          "entryEdgeIds",
+          "exitEdgeIds",
+          "capacity",
+          "passingAllowed",
+          "directionalMode",
+          "recoveryNodeIds"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "memberNodeIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "memberEdgeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+          "entryEdgeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+          "exitEdgeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+          "capacity": {"type": "integer", "minimum": 1},
+          "passingAllowed": {"type": "boolean"},
+          "directionalMode": {"enum": ["single_direction_at_a_time", "unrestricted"]},
+          "recoveryNodeIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        }
+      }
+    }
+  }
+}

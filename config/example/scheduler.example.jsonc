@@ -1,0 +1,98 @@
+{
+  // 配置格式版本。升级数据结构时才修改。
+  "schemaVersion": 1,
+
+  // simulation：仿真；real：真实车辆。当前安全参数未确认，只允许 simulation。
+  "mode": "simulation",
+
+  "fleet": {
+    // 一次运行开始后不允许临时增加或移除车辆。
+    "fixedDuringRun": true,
+    // 两种车型的车辆数量，必须和 initial-vehicles.json 中的实际条目一致。
+    "counts": {
+      "fork": 6,
+      "jack": 8
+    },
+    // 车辆初始状态配置文件。
+    "initialVehiclesFile": "config/initial-vehicles.json"
+  },
+
+  "serviceDefaults": {
+    // 未在任务中单独指定时，取货和放货各占用多少毫秒。
+    "pickupServiceMs": 5000,
+    "dropoffServiceMs": 5000,
+    // 同一作业点同时允许作业的车辆数。
+    "workstationCapacity": 1,
+    // true 表示车辆取放货时，其他车辆不能通过该 AP 节点。
+    "blocksTransitDuringService": true,
+    // true 表示这些数值是暂定值，后续可按业务数据调整。
+    "provisional": true
+  },
+
+  "planner": {
+    // 每隔多少毫秒重新进行一次滚动规划。
+    "planningPeriodMs": 5000,
+    // 每次向未来规划多长时间。
+    "planningHorizonMs": 20000,
+    // 每次只提交近期多少毫秒的计划，远期计划可以再次调整。
+    "executionHorizonMs": 5000,
+    // 单次规划允许使用的最长计算时间。
+    "planningTimeoutMs": 1000,
+    // 当前规划参数也是仿真预设值。
+    "provisional": true
+  },
+
+  "traffic": {
+    "wait": {
+      // LM 是普通路径点，AP 是取放货点，目前都不允许计划停车等待。
+      "allowOnLM": false,
+      "allowOnAP": false,
+      // PP 和 CP 可作为短时等待或恢复位置。
+      "allowOnPP": true,
+      "allowOnCP": true,
+      // 单次计划等待最长 60 秒。
+      "maxPlannedWaitMs": 60000,
+      // 只允许解决交通冲突的短时等待，不允许长期驻车。
+      "shortTermOnly": true
+    },
+    "reverse": {
+      // recovery_only：正常规划不倒退，只在冲突恢复时使用。
+      // 其他可选值：disabled、map_edges_only、planned。
+      "mode": "recovery_only",
+      // 即使地图没有反向边，也允许车辆沿当前边原路退出。
+      "alongCurrentEdgeAllowed": true,
+      // 载货车辆同样允许执行恢复倒退。
+      "loadedAllowed": true,
+      // 一次倒退允许的最大距离和最长持续时间。
+      "maxDistanceM": 5.0,
+      "maxDurationMs": 15000,
+      // 倒退前必须一次性获得整段资源，不能边退边抢占。
+      "requiresAtomicReservation": true
+    }
+  },
+
+  "safety": {
+    // 真实模式必须填写并确认下面所有安全参数。
+    "requireCompleteForRealMode": true,
+    // 车辆外形之外额外增加的安全边距，单位米。
+    "footprintMarginM": null,
+    // 定位系统最大误差，单位米。
+    "localizationErrorM": null,
+    // 通信链路最大延迟，单位毫秒。
+    "communicationLatencyMs": null,
+    // 与固定障碍物保持的额外距离，单位米。
+    "fixedClearanceM": null,
+    // 车辆能够保证达到的最小减速度，单位 m/s^2。
+    "guaranteedDecelerationMps2": null,
+    // 进入和离开预留资源前后的时间缓冲，单位毫秒。
+    "reservationEntryBufferMs": null,
+    "reservationExitBufferMs": null,
+    // true 会使真实车辆模式启动失败，防止误用暂定安全参数。
+    "provisional": true
+  },
+
+  "features": {
+    // 第一版不处理电池电量和充电任务。
+    "batteryScheduling": false
+  }
+}

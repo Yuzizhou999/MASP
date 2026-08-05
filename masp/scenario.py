@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
+
+from .domain import DomainError, TransportTask, Vehicle, VehiclePlan
+from .simulator import DeterministicSimulator
+from .topology import MapTopology
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+# 检查规范
+def validate_scenario_document(
+    scenario: dict[str, Any],
+    schemas_dir: Path,
+) -> None:
+    task_schema = load_json(schemas_dir / "task.schema.json")
+    plan_schema = load_json(schemas_dir / "plan.schema.json")
+    scenario_schema = load_json(schemas_dir / "simulation-scenario.schema.json")
+    registry = Registry().with_resources(
+        [
+            (task_schema["$id"], Resource.from_contents(task_schema)),
+            (plan_schema["$id"], Resource.from_contents(plan_schema)),
+        ]
+    )
+    errors = sorted(
+        Draft202012Validator(scenario_schema, registry=registry).iter_errors(scenario),
+        key=lambda item: list(item.absolute_path),
+    )
+    if errors:
+        error = errors[0]
+        path = "$" + "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}"
+            for part in error.absolute_path
+        )
+        raise DomainError(
+            "scenario.schema.invalid", f"scenario {path}: {error.message}"
+        )
+
+
+def build_simulator(
+    scenario: dict[str, Any],
+    model: dict[str, Any],
+    conflicts: dict[str, Any],
+    workstations: dict[str, Any],
+    scheduler: dict[str, Any],
+    schemas_dir: Path,
+) -> DeterministicSimulator:
+    validate_scenario_document(scenario, schemas_dir)
+    # 把场景里每个任务 JSON 变成 TransportTask 对象
+    service_defaults = scheduler["serviceDefaults"]
+    tasks = [
+        TransportTask.from_dict(
+            item,
+            int(service_defaults["pickupServiceMs"]),
+            int(service_defaults["dropoffServiceMs"]),
+        )
+        for item in scenario["tasks"]
+    ]
+    return DeterministicSimulator(
+        topology=MapTopology(model, conflicts, workstations),
+        vehicles=[Vehicle.from_dict(item) for item in scenario["vehicles"]],
+        tasks=tasks,
+        plans=[VehiclePlan.from_dict(item) for item in scenario["plans"]],
+        end_time_ms=int(scenario["endTimeMs"]),
+    )

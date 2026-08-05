@@ -1,0 +1,112 @@
+{
+  // 配置格式版本。
+  "schemaVersion": 1,
+  // 当前版本要求一次运行中的车队保持不变。
+  "fixedDuringRun": true,
+
+  // 每辆车都必须有唯一编号和唯一初始节点。
+  "vehicles": [
+    {
+      "vehicleId": "fork-001",       // 车辆唯一编号。
+      "robotGroup": "fork",         // fork：叉车；jack：搬运车。
+      "initialNodeId": "fork:PP1171", // 必须是该车型可达且允许等待的节点。
+      "initialHeadingRad": 0.0,       // 初始朝向，单位弧度；0 表示地图 x 轴正方向。
+      "initialLoadState": "empty"    // empty：空载；loaded：载货。
+    },
+    {
+      "vehicleId": "fork-002",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1172",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-003",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1173",
+      "initialHeadingRad": -3.141593,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-004",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1174",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-005",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1175",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-006",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:CP1039",
+      "initialHeadingRad": -3.141593,
+      "initialLoadState": "empty"
+    },
+
+    // 以下为 jack 车型，规则与 fork 相同，但节点必须属于 jack 路网。
+    {
+      "vehicleId": "jack-001",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP363",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-002",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP365",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-003",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP367",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-004",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP399",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-005",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP695",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-006",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP696",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-007",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:CP49",
+      "initialHeadingRad": -3.141593,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-008",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:CP50",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    }
+
+    // 若 initialLoadState 为 loaded，还必须增加："payloadId": "货物编号"。
+  ]
+}

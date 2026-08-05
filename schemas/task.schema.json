@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masp.local/schemas/task.schema.json",
+  "title": "MASP transport task",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "taskId",
+    "releaseTimeMs",
+    "pickupNodeId",
+    "dropoffNodeId",
+    "requiredRobotGroup",
+    "payloadType"
+  ],
+  "properties": {
+    "taskId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "revision": {"type": "integer", "minimum": 0, "default": 0},
+    "releaseTimeMs": {"type": "integer", "minimum": 0},
+    "pickupNodeId": {"type": "string", "minLength": 1},
+    "dropoffNodeId": {"type": "string", "minLength": 1},
+    "requiredRobotGroup": {"enum": ["fork", "jack"]},
+    "payloadType": {"type": "string", "minLength": 1},
+    "payloadId": {"type": ["string", "null"]},
+    "pickupServiceMs": {"type": ["integer", "null"], "minimum": 1},
+    "dropoffServiceMs": {"type": ["integer", "null"], "minimum": 1},
+    "priorityClass": {"type": "integer", "minimum": 0, "default": 0},
+    "dueTimeMs": {"type": ["integer", "null"], "minimum": 0},
+    "state": {
+      "enum": [
+        "QUEUED",
+        "ASSIGNED",
+        "EN_ROUTE_PICKUP",
+        "PICKUP_SERVICE",
+        "EN_ROUTE_DROPOFF",
+        "DROPOFF_SERVICE",
+        "COMPLETED",
+        "CANCELLED",
+        "FAILED"
+      ],
+      "default": "QUEUED"
+    },
+    "assignedVehicleId": {"type": ["string", "null"]}
+  }
+}
+

@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "phase1-single-vehicle",
+  "seed": 0,
+  "endTimeMs": 30000,
+  "vehicles": [
+    {
+      "vehicleId": "fork-001",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1171",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    }
+  ],
+  "tasks": [
+    {
+      "taskId": "task-phase1-001",
+      "releaseTimeMs": 0,
+      "pickupNodeId": "fork:AP1123",
+      "dropoffNodeId": "fork:AP2121",
+      "requiredRobotGroup": "fork",
+      "payloadType": "pallet",
+      "payloadId": "pallet-001"
+    }
+  ],
+  "plans": [
+    {
+      "id": "plan-fork-001-001",
+      "revision": 0,
+      "vehicleId": "fork-001",
+      "taskId": "task-phase1-001",
+      "basedOnVehicleRevision": 0,
+      "basedOnWorldRevision": 0,
+      "createdAtMs": 100,
+      "horizonEndMs": 30000,
+      "committedUntilMs": 28500,
+      "segments": [
+        {
+          "id": "to-pickup-01",
+          "kind": "traverse",
+          "startMs": 1000,
+          "endMs": 4000,
+          "startNodeId": "fork:PP1171",
+          "endNodeId": "shared:LM1118",
+          "edgeId": "fork:edge-218",
+          "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-pickup-02",
+          "kind": "traverse",
+          "startMs": 4000,
+          "endMs": 9000,
+          "startNodeId": "shared:LM1118",
+          "endNodeId": "shared:LM1124",
+          "edgeId": "fork:edge-122",
+          "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-pickup-03",
+          "kind": "traverse",
+          "startMs": 9000,
+          "endMs": 11500,
+          "startNodeId": "shared:LM1124",
+          "endNodeId": "fork:AP1123",
+          "edgeId": "fork:edge-59",
+          "expectedLoadState": "empty"
+        },
+        {
+          "id": "pickup",
+          "kind": "pickup",
+          "startMs": 11500,
+          "endMs": 16500,
+          "startNodeId": "fork:AP1123",
+          "endNodeId": "fork:AP1123",
+          "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-dropoff-01",
+          "kind": "traverse",
+          "startMs": 16500,
+          "endMs": 19000,
+          "startNodeId": "fork:AP1123",
+          "endNodeId": "shared:LM1124",
+          "edgeId": "fork:edge-58",
+          "expectedLoadState": "loaded"
+        },
+        {
+          "id": "to-dropoff-02",
+          "kind": "traverse",
+          "startMs": 19000,
+          "endMs": 21000,
+          "startNodeId": "shared:LM1124",
+          "endNodeId": "fork:LM1122",
+          "edgeId": "fork:edge-123",
+          "expectedLoadState": "loaded"
+        },
+        {
+          "id": "to-dropoff-03",
+          "kind": "traverse",
+          "startMs": 21000,
+          "endMs": 23500,
+          "startNodeId": "fork:LM1122",
+          "endNodeId": "fork:AP2121",
+          "edgeId": "fork:edge-61",
+          "expectedLoadState": "loaded"
+        },
+        {
+          "id": "dropoff",
+          "kind": "dropoff",
+          "startMs": 23500,
+          "endMs": 28500,
+          "startNodeId": "fork:AP2121",
+          "endNodeId": "fork:AP2121",
+          "expectedLoadState": "loaded"
+        }
+      ]
+    }
+  ]
+}

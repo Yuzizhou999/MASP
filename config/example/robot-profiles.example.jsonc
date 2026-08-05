@@ -1,0 +1,79 @@
+{
+  // 配置格式版本。
+  "schemaVersion": 1,
+
+  // 本文件所有物理量的单位。修改车辆参数前先确认单位一致。
+  "units": {
+    "linearSpeed": "m/s",
+    "linearAcceleration": "m/s^2",
+    "angularSpeed": "deg/s",
+    "angularAcceleration": "deg/s^2",
+    "dimensions": "m"
+  },
+
+  "robotGroups": {
+    "fork": {
+      // 叉车占地尺寸，用于计算道路空间冲突。
+      "dimensions": {
+        "length": 2.0,
+        "width": 1.0
+      },
+      // 空载运动参数。
+      "unloaded": {
+        "maxForwardSpeed": 2.0,          // 最大前进速度。
+        "maxReverseSpeed": 1.0,          // 最大倒退速度。
+        "maxAcceleration": 1.0,          // 最大线加速度。
+        "maxDeceleration": 1.0,          // 最大线减速度。
+        "maxRotationSpeed": 90.0,        // 最大旋转速度。
+        "maxRotationAcceleration": 120.0,// 最大旋转加速度。
+        "maxRotationDeceleration": 90.0  // 最大旋转减速度。
+      },
+      // 载货后的速度和加减速度可以更保守。
+      "loaded": {
+        "maxForwardSpeed": 2.0,
+        "maxReverseSpeed": 1.0,
+        "maxAcceleration": 0.5,
+        "maxDeceleration": 0.5,
+        "maxRotationSpeed": 90.0,
+        "maxRotationAcceleration": 60.0,
+        "maxRotationDeceleration": 60.0
+      }
+    },
+
+    "jack": {
+      // jack 车型尺寸较小，但字段含义与 fork 完全相同。
+      "dimensions": {
+        "length": 1.0,
+        "width": 0.5
+      },
+      "unloaded": {
+        "maxForwardSpeed": 2.0,
+        "maxReverseSpeed": 1.0,
+        "maxAcceleration": 1.0,
+        "maxDeceleration": 1.0,
+        "maxRotationSpeed": 90.0,
+        "maxRotationAcceleration": 120.0,
+        "maxRotationDeceleration": 90.0
+      },
+      "loaded": {
+        "maxForwardSpeed": 2.0,
+        "maxReverseSpeed": 1.0,
+        "maxAcceleration": 0.5,
+        "maxDeceleration": 0.5,
+        "maxRotationSpeed": 90.0,
+        "maxRotationAcceleration": 60.0,
+        "maxRotationDeceleration": 60.0
+      }
+    }
+  },
+
+  "simulationSafety": {
+    // 仿真冲突计算时，在车辆外形外额外扩大的距离。
+    "footprintMargin": 0.0,
+    // 尚未确认的参数保持 null，避免被误认为真实安全值。
+    "localizationError": null,
+    "communicationLatency": null,
+    "provisional": true,
+    "note": "当前先生成车辆真实外形的基础冲突；定位误差、通信延迟和额外安全边距确认后再膨胀。"
+  }
+}

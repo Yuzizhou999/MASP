@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "recoveryNodes": [
+    {"nodeId": "fork:PP1171", "allowedRobotGroups": ["fork"]},
+    {"nodeId": "fork:PP1172", "allowedRobotGroups": ["fork"]},
+    {"nodeId": "fork:PP1173", "allowedRobotGroups": ["fork"]},
+    {"nodeId": "fork:PP1174", "allowedRobotGroups": ["fork"]},
+    {"nodeId": "fork:PP1175", "allowedRobotGroups": ["fork"]},
+    {"nodeId": "fork:CP1039", "allowedRobotGroups": ["fork"]},
+    {"nodeId": "fork:CP1153", "allowedRobotGroups": ["fork"]},
+    {"nodeId": "jack:PP363", "allowedRobotGroups": ["jack"]},
+    {"nodeId": "jack:PP365", "allowedRobotGroups": ["jack"]},
+    {"nodeId": "jack:PP367", "allowedRobotGroups": ["jack"]},
+    {"nodeId": "jack:PP399", "allowedRobotGroups": ["jack"]},
+    {"nodeId": "jack:PP695", "allowedRobotGroups": ["jack"]},
+    {"nodeId": "jack:PP696", "allowedRobotGroups": ["jack"]},
+    {"nodeId": "jack:CP49", "allowedRobotGroups": ["jack"]},
+    {"nodeId": "jack:CP50", "allowedRobotGroups": ["jack"]}
+  ],
+  "zones": []
+}
+

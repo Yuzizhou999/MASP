@@ -1,0 +1,16 @@
+{
+  "taskId": "task-001",                 // 任务唯一编号，重复提交同一编号应保持幂等。
+  "revision": 0,                         // 任务修订版本，首次提交为 0。
+  "releaseTimeMs": 0,                    // 任务进入系统的仿真时间，单位毫秒。
+  "pickupNodeId": "fork:AP1113",        // 取货 AP 节点。
+  "dropoffNodeId": "fork:AP1116",       // 放货 AP 节点。
+  "requiredRobotGroup": "fork",         // 明确指定 fork 或 jack。
+  "payloadType": "pallet",              // 货物类型，由业务系统定义。
+  "payloadId": "pallet-001",            // 可选，具体货物编号。
+  "pickupServiceMs": null,               // null 表示使用 scheduler.json 的默认取货时间。
+  "dropoffServiceMs": null,              // null 表示使用默认放货时间。
+  "priorityClass": 0,                    // 数值越大是否越优先由后续分配策略统一定义。
+  "dueTimeMs": null,                     // 可选截止时间；null 表示没有截止时间。
+  "state": "QUEUED",                    // 新任务固定从等待分配状态开始。
+  "assignedVehicleId": null              // 调度器分配车辆后填写，提交新任务时为 null。
+}

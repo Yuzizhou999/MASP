@@ -6,7 +6,7 @@ from pathlib import Path
 
 PLACEHOLDER = "__XIATE_MAP_MODEL_JSON__"
 
-
+# 把地图数据"内联"进 HTML 预览页里
 def main() -> None:
     parser = argparse.ArgumentParser(description="Embed a generated map model into the scene fragment")
     parser.add_argument("template", type=Path)

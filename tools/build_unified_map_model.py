@@ -11,7 +11,35 @@ from typing import Any
 def load_model(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
+# 把"全局等待开关"解析进每个节点
+def wait_policy_for(
+    node: dict[str, Any],
+    scheduler_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    wait_config = (scheduler_config or {}).get("traffic", {}).get("wait", {})
+    node_type = node["type"]
+    configured_flags = {
+        "LM": "allowOnLM",
+        "AP": "allowOnAP",
+        "PP": "allowOnPP",
+        "CP": "allowOnCP",
+    }
+    flag_name = configured_flags.get(node_type)
+    if flag_name is None or flag_name not in wait_config:
+        allowed = bool(node.get("allowWait", False))
+        source = "map-default"
+    else:
+        allowed = bool(wait_config[flag_name])
+        source = f"global:{flag_name}"
 
+    max_wait_ms = int(wait_config.get("maxPlannedWaitMs", 60_000)) if allowed else 0
+    return {
+        "allowed": allowed,
+        "maxWaitMs": max_wait_ms,
+        "source": source,
+    }
+
+# 两点距离
 def node_distance(left: dict[str, Any], right: dict[str, Any]) -> float:
     return math.hypot(left["x"] - right["x"], left["y"] - right["y"])
 
@@ -23,7 +51,7 @@ def cubic_point(edge: dict[str, Any], t: float) -> tuple[float, float]:
     y = u**3 * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t**3 * p3[1]
     return x, y
 
-
+# 判断两条线是不是同一条路
 def path_deviation(
     left: dict[str, Any], right: dict[str, Any], reverse_right: bool, samples: int = 24
 ) -> tuple[float, float]:
@@ -34,10 +62,11 @@ def path_deviation(
         distances.append(math.dist(cubic_point(left, t), cubic_point(right, right_t)))
     return max(distances), sum(distances) / len(distances)
 
-
+# 合并节点
 def canonical_node(
     canonical_id: str,
     group_nodes: dict[str, dict[str, Any]],
+    scheduler_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     positions = {
         group: [node["x"], node["y"]]
@@ -48,6 +77,10 @@ def canonical_node(
         for group, node in sorted(group_nodes.items())
     }
     coordinates = list(positions.values())
+    wait_policies = {
+        group: wait_policy_for(node, scheduler_config)
+        for group, node in sorted(group_nodes.items())
+    }
     return {
         "id": canonical_id,
         "type": next(iter(group_nodes.values()))["type"],
@@ -60,10 +93,17 @@ def canonical_node(
         },
         "positions": positions,
         "headings": headings,
-        "allowWaitByGroup": {
-            group: node["allowWait"]
+        "propertiesByGroup": {
+            group: node.get("properties", {})
             for group, node in sorted(group_nodes.items())
         },
+        "allowWaitByGroup": {
+            group: policy["allowed"]
+            for group, policy in wait_policies.items()
+        },
+        "waitPolicyByGroup": wait_policies,
+        "capacity": 1,
+        "resourceIds": [f"node:{canonical_id}"],
     }
 
 
@@ -73,7 +113,9 @@ def build_unified_model(
     same_id_tolerance: float,
     alias_tolerance: float,
     path_tolerance: float,
+    scheduler_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # 各取节点列表
     group_models = {"fork": fork, "jack": jack}
     group_nodes = {
         group: {node["id"]: node for node in model["nodes"]}
@@ -81,19 +123,27 @@ def build_unified_model(
     }
     fork_nodes = group_nodes["fork"]
     jack_nodes = group_nodes["jack"]
+
     matched_fork: set[str] = set()
     matched_jack: set[str] = set()
     node_map: dict[tuple[str, str], str] = {}
     nodes: list[dict[str, Any]] = []
     match_records: list[dict[str, Any]] = []
 
+    # 节点合并，名字一样的直接合并，名字不一样的按坐标距离匹配
     for node_id in sorted(set(fork_nodes) & set(jack_nodes)):
         fork_node = fork_nodes[node_id]
         jack_node = jack_nodes[node_id]
         distance = node_distance(fork_node, jack_node)
         if fork_node["type"] == jack_node["type"] and distance <= same_id_tolerance:
             canonical_id = f"shared:{node_id}"
-            nodes.append(canonical_node(canonical_id, {"fork": fork_node, "jack": jack_node}))
+            nodes.append(
+                canonical_node(
+                    canonical_id,
+                    {"fork": fork_node, "jack": jack_node},
+                    scheduler_config,
+                )
+            )
             node_map[("fork", node_id)] = canonical_id
             node_map[("jack", node_id)] = canonical_id
             matched_fork.add(node_id)
@@ -107,7 +157,7 @@ def build_unified_model(
                     "distance": round(distance, 4),
                 }
             )
-
+    # 收集候选
     alias_candidates: list[tuple[float, str, str]] = []
     for fork_id, fork_node in fork_nodes.items():
         if fork_id in matched_fork:
@@ -119,6 +169,7 @@ def build_unified_model(
             if distance <= alias_tolerance:
                 alias_candidates.append((distance, fork_id, jack_id))
 
+    # 按远近逐个配对
     for distance, fork_id, jack_id in sorted(alias_candidates):
         if fork_id in matched_fork or jack_id in matched_jack:
             continue
@@ -127,6 +178,7 @@ def build_unified_model(
             canonical_node(
                 canonical_id,
                 {"fork": fork_nodes[fork_id], "jack": jack_nodes[jack_id]},
+                scheduler_config,
             )
         )
         node_map[("fork", fork_id)] = canonical_id
@@ -143,15 +195,23 @@ def build_unified_model(
             }
         )
 
+    # 独有节点
     for group, source_nodes, matched in (
         ("fork", fork_nodes, matched_fork),
         ("jack", jack_nodes, matched_jack),
     ):
         for node_id in sorted(set(source_nodes) - matched):
             canonical_id = f"{group}:{node_id}"
-            nodes.append(canonical_node(canonical_id, {group: source_nodes[node_id]}))
+            nodes.append(
+                canonical_node(
+                    canonical_id,
+                    {group: source_nodes[node_id]},
+                    scheduler_config,
+                )
+            )
             node_map[(group, node_id)] = canonical_id
 
+    # 转换边
     edges: list[dict[str, Any]] = []
     edges_by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for group, model in group_models.items():
@@ -169,6 +229,7 @@ def build_unified_model(
             edges.append(unified_edge)
             edges_by_group[group].append(unified_edge)
 
+    # 共享路径匹配
     fork_buckets: dict[frozenset[str], list[dict[str, Any]]] = defaultdict(list)
     jack_buckets: dict[frozenset[str], list[dict[str, Any]]] = defaultdict(list)
     for edge in edges_by_group["fork"]:
@@ -232,6 +293,7 @@ def build_unified_model(
                 "sharedPathTolerance": path_tolerance,
                 "note": "Routes remain robot-group specific; shared physical resources are matched separately.",
             },
+            "waitPolicy": (scheduler_config or {}).get("traffic", {}).get("wait", {}),
             "bounds": {
                 "minX": min(all_x),
                 "maxX": max(all_x),
@@ -264,7 +326,10 @@ def main() -> None:
     parser.add_argument("--same-id-tolerance", type=float, default=0.15)
     parser.add_argument("--alias-tolerance", type=float, default=0.02)
     parser.add_argument("--path-tolerance", type=float, default=0.15)
+    parser.add_argument("--scheduler-config", type=Path)
     args = parser.parse_args()
+
+    scheduler_config = load_model(args.scheduler_config) if args.scheduler_config else None
 
     model = build_unified_model(
         load_model(args.fork),
@@ -272,6 +337,7 @@ def main() -> None:
         args.same_id_tolerance,
         args.alias_tolerance,
         args.path_tolerance,
+        scheduler_config,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "fixedDuringRun": true,
+  "vehicles": [
+    {
+      "vehicleId": "fork-001",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1171",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-002",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1172",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-003",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1173",
+      "initialHeadingRad": -3.141593,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-004",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1174",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-005",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1175",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-006",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:CP1039",
+      "initialHeadingRad": -3.141593,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-001",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP363",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-002",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP365",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-003",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP367",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-004",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP399",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-005",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP695",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-006",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP696",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-007",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:CP49",
+      "initialHeadingRad": -3.141593,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-008",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:CP50",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    }
+  ]
+}
+

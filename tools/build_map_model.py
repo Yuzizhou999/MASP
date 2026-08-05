@@ -15,7 +15,7 @@ POINT_TYPES = {
     "ChargePoint": "CP",
 }
 
-
+# 转换格式为字典
 def typed_properties(items: list[dict[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     value_fields = (
@@ -34,7 +34,7 @@ def typed_properties(items: list[dict[str, Any]]) -> dict[str, Any]:
         result[item["key"]] = value
     return result
 
-
+# 算出三次贝塞尔曲线上某点的坐标
 def cubic_point(
     p0: dict[str, float],
     p1: dict[str, float],
@@ -57,7 +57,7 @@ def cubic_point(
     )
     return x, y
 
-
+# 离散采样逼近曲线长度
 def cubic_length(points: list[dict[str, float]], samples: int = 32) -> float:
     previous = cubic_point(*points, 0.0)
     total = 0.0
@@ -67,7 +67,7 @@ def cubic_length(points: list[dict[str, float]], samples: int = 32) -> float:
         previous = current
     return total
 
-
+# 给一张有向图和一个起点，用栈/深度优先把所有能走到的节点标记出来
 def reachable(graph: dict[str, list[str]], start: str) -> set[str]:
     visited = {start}
     stack = [start]
@@ -84,6 +84,7 @@ def build_model(source: Path) -> dict[str, Any]:
     with source.open("r", encoding="utf-8") as handle:
         raw = json.load(handle)
 
+    # 解析节点
     nodes: list[dict[str, Any]] = []
     node_ids: set[str] = set()
     type_counts: Counter[str] = Counter()
@@ -107,6 +108,7 @@ def build_model(source: Path) -> dict[str, Any]:
         node_ids.add(node_id)
         type_counts[node_type] += 1
 
+    # 解析边
     graph = {node_id: [] for node_id in node_ids}
     reverse_graph = {node_id: [] for node_id in node_ids}
     edges: list[dict[str, Any]] = []
@@ -122,6 +124,7 @@ def build_model(source: Path) -> dict[str, Any]:
         props = typed_properties(curve.get("property", []))
         start_pos = curve["startPos"]["pos"]
         end_pos = curve["endPos"]["pos"]
+        # 如果是直线路径，计算两个控制点的位置，使得曲线近似为直线
         if curve.get("className") == "StraightPath":
             control_pos1 = {
                 "x": start_pos["x"] + (end_pos["x"] - start_pos["x"]) / 3.0,
@@ -160,11 +163,15 @@ def build_model(source: Path) -> dict[str, Any]:
     if not nodes:
         raise ValueError("The map contains no routing nodes")
 
+    # 正向能到全部 = 没有"死胡同出不去"；反向也能到全部 = 没有"进得来出不去"。
+    # 两者都满足就是强连通。
     first = nodes[0]["id"]
     forward_count = len(reachable(graph, first))
     reverse_count = len(reachable(reverse_graph, first))
+
     xs = [node["x"] for node in nodes]
     ys = [node["y"] for node in nodes]
+    # 背景点网格化
     background_step = 0.25
     background_cells = sorted(
         {
