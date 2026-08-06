@@ -36,10 +36,10 @@ EVENT_PRIORITY: dict[EventType, int] = {
     EventType.VEHICLE_WAIT_STARTED: 30,
     EventType.PICKUP_STARTED: 30,
     EventType.DROPOFF_STARTED: 30,
-    EventType.TASK_RELEASED: 40,
-    EventType.TASK_ASSIGNED: 50,
-    EventType.PLAN_COMPUTED: 60,
-    EventType.PLAN_COMMITTED: 61,
+    EventType.TASK_RELEASED: 21,
+    EventType.TASK_ASSIGNED: 23,
+    EventType.PLAN_COMPUTED: 24,
+    EventType.PLAN_COMMITTED: 25,
     EventType.METRICS_SAMPLED: 70,
 }
 

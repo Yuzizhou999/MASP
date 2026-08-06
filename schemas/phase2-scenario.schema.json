@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masp.local/schemas/phase2-scenario.schema.json",
+  "title": "MASP phase 2 automatic planning scenario",
+  "description": "阶段 2 输入只包含车辆和持续到达的任务，路径与时间计划由分配器和 SIPP 自动生成。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scenarioId", "seed", "endTimeMs", "vehicles", "tasks"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "scenarioId": {"type": "string", "minLength": 1},
+    "seed": {"type": "integer", "minimum": 0},
+    "endTimeMs": {"type": "integer", "minimum": 1},
+    "vehicles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["vehicleId", "robotGroup", "initialNodeId", "initialHeadingRad", "initialLoadState"],
+        "properties": {
+          "vehicleId": {"type": "string", "minLength": 1},
+          "robotGroup": {"enum": ["fork", "jack"]},
+          "initialNodeId": {"type": "string", "minLength": 1},
+          "initialHeadingRad": {"type": "number", "minimum": -6.283186, "maximum": 6.283186},
+          "initialLoadState": {"const": "empty"},
+          "capabilities": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "https://masp.local/schemas/task.schema.json"}
+    }
+  }
+}

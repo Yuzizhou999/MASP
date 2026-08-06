@@ -19,9 +19,9 @@ def test_same_timestamp_events_follow_fixed_safety_order() -> None:
         EventType.VEHICLE_FAULTED,
         EventType.VEHICLE_EXIT_EDGE,
         EventType.PICKUP_COMPLETED,
-        EventType.VEHICLE_ENTER_EDGE,
         EventType.TASK_RELEASED,
         EventType.PLAN_COMMITTED,
+        EventType.VEHICLE_ENTER_EDGE,
     ]
 
 

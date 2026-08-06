@@ -28,6 +28,14 @@ pytest -q
 
 出现 `valid: true` 表示配置可用于仿真。当前安全参数没有最终确认，因此出现 `simulation-only` 告警属于预期行为。
 
+阶段 2 的自动任务分配与连续时间路径规划可运行：
+
+```powershell
+python tools/run_phase2.py scenarios/phase2-continuous-tasks.json
+```
+
+结果写入 `runs/phase2-continuous-tasks/`，其中 `planned-scenario.json` 可用于逐段检查车辆选择、路线、等待、取放货服务和放货后撤离。
+
 ## 不要手工修改
 
 `generated/` 目录下的统一地图、冲突资源和工位文件由工具生成，不应手工添加注释或修改内容，否则下次构建会被覆盖。

@@ -64,3 +64,18 @@ def test_tentative_plan_can_be_committed_and_removed_by_policy() -> None:
     assert table.remove_plan("plan:vehicle-1") == 0
     assert table.remove_plan("plan:vehicle-1", include_committed=True) == 1
     assert table.snapshot() == ()
+
+
+def test_vehicle_reservations_are_replaced_atomically() -> None:
+    table = ReservationTable()
+    old = reservation("old", "vehicle-1", 0, 100)
+    blocker = reservation("blocker", "vehicle-2", 100, 200)
+    table.insert_batch([old, blocker])
+
+    replacement = reservation("new", "vehicle-1", 200, 300)
+    table.replace_vehicle("vehicle-1", [replacement])
+
+    assert {item.reservation_id for item in table.for_vehicle("vehicle-1")} == {"new"}
+    with pytest.raises(ReservationConflict):
+        table.replace_vehicle("vehicle-1", [reservation("bad", "vehicle-1", 150, 250)])
+    assert {item.reservation_id for item in table.for_vehicle("vehicle-1")} == {"new"}

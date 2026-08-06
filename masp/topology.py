@@ -56,6 +56,16 @@ class MapTopology:
             )
 
     def validate_task(self, task: TransportTask) -> None:
+        if task.pickup_service_ms <= 0 or task.dropoff_service_ms <= 0:
+            raise DomainError(
+                "task.service.duration",
+                f"task {task.task_id!r} service durations must be positive",
+            )
+        if task.due_time_ms is not None and task.due_time_ms < task.release_time_ms:
+            raise DomainError(
+                "task.due_time.before_release",
+                f"task {task.task_id!r} due time is earlier than its release time",
+            )
         for role, node_id in (
             ("pickup", task.pickup_node_id),
             ("dropoff", task.dropoff_node_id),

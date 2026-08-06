@@ -95,10 +95,10 @@ class PlanValidator:
             raise DomainError(
                 "plan.created.before_release", "plan cannot be created before task release"
             )
-        if plan.created_at_ms >= segments[0].start_ms:
+        if plan.created_at_ms > segments[0].start_ms:
             raise DomainError(
                 "plan.commit.not_before_execution",
-                "plan must be committed before its first segment starts",
+                "plan must be committed no later than its first segment start",
             )
         if plan.committed_until_ms < segments[-1].end_ms:
             raise DomainError(
@@ -128,11 +128,6 @@ class PlanValidator:
         resources_by_segment: dict[str, tuple[str, ...]] = {}
         # 逐段体检
         for segment in segments:
-            if service_phase == "after_dropoff":
-                raise DomainError(
-                    "plan.segment.after_dropoff",
-                    "dropoff must be the final segment of a phase 1 task plan",
-                )
             if segment.start_ms < 0 or segment.end_ms <= segment.start_ms:
                 raise DomainError(
                     "plan.segment.interval",
@@ -243,6 +238,11 @@ class PlanValidator:
         if service_phase != "after_dropoff":
             raise DomainError(
                 "plan.service.incomplete", "plan must finish one pickup and one dropoff"
+            )
+        if not self.topology.wait_allowed(current_node_id, vehicle.robot_group):
+            raise DomainError(
+                "plan.final_node.wait_disallowed",
+                f"plan must end at a waitable node, got {current_node_id!r}",
             )
         return ValidatedPlan(
             plan=plan,

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "scenarioId": "phase1-single-vehicle",
   "seed": 0,
-  "endTimeMs": 30000,
+  "endTimeMs": 90000,
   "vehicles": [
     {
       "vehicleId": "fork-001",
@@ -32,8 +32,8 @@
       "basedOnVehicleRevision": 0,
       "basedOnWorldRevision": 0,
       "createdAtMs": 100,
-      "horizonEndMs": 30000,
-      "committedUntilMs": 28500,
+      "horizonEndMs": 90000,
+      "committedUntilMs": 85800,
       "segments": [
         {
           "id": "to-pickup-01",
@@ -112,6 +112,62 @@
           "startNodeId": "fork:AP2121",
           "endNodeId": "fork:AP2121",
           "expectedLoadState": "loaded"
+        },
+        {
+          "id": "to-parking-01", "kind": "traverse", "startMs": 28500, "endMs": 33200,
+          "startNodeId": "fork:AP2121", "endNodeId": "fork:LM1122", "edgeId": "fork:edge-60", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-02", "kind": "traverse", "startMs": 33200, "endMs": 35700,
+          "startNodeId": "fork:LM1122", "endNodeId": "shared:LM1120", "edgeId": "fork:edge-121", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-03", "kind": "traverse", "startMs": 35700, "endMs": 41400,
+          "startNodeId": "shared:LM1120", "endNodeId": "shared:LM1463", "edgeId": "fork:edge-259", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-04", "kind": "traverse", "startMs": 41400, "endMs": 44900,
+          "startNodeId": "shared:LM1463", "endNodeId": "shared:LM1146", "edgeId": "fork:edge-258", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-05", "kind": "traverse", "startMs": 44900, "endMs": 49100,
+          "startNodeId": "shared:LM1146", "endNodeId": "shared:LM2456", "edgeId": "fork:edge-291", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-06", "kind": "traverse", "startMs": 49100, "endMs": 52000,
+          "startNodeId": "shared:LM2456", "endNodeId": "fork:LM2457", "edgeId": "fork:edge-290", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-07", "kind": "traverse", "startMs": 52000, "endMs": 55100,
+          "startNodeId": "fork:LM2457", "endNodeId": "shared:LM1144", "edgeId": "fork:edge-289", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-08", "kind": "traverse", "startMs": 55100, "endMs": 59000,
+          "startNodeId": "shared:LM1144", "endNodeId": "shared:LM1191", "edgeId": "fork:edge-166", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-09", "kind": "traverse", "startMs": 59000, "endMs": 65400,
+          "startNodeId": "shared:LM1191", "endNodeId": "shared:LM213", "edgeId": "fork:edge-277", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-10", "kind": "traverse", "startMs": 65400, "endMs": 72100,
+          "startNodeId": "shared:LM213", "endNodeId": "shared:LM1112|LM1121", "edgeId": "fork:edge-282", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-11", "kind": "traverse", "startMs": 72100, "endMs": 74800,
+          "startNodeId": "shared:LM1112|LM1121", "endNodeId": "fork:LM1115", "edgeId": "fork:edge-115", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-12", "kind": "traverse", "startMs": 74800, "endMs": 77400,
+          "startNodeId": "fork:LM1115", "endNodeId": "shared:LM1117", "edgeId": "fork:edge-117", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-13", "kind": "traverse", "startMs": 77400, "endMs": 80600,
+          "startNodeId": "shared:LM1117", "endNodeId": "fork:LM1217", "edgeId": "fork:edge-213", "expectedLoadState": "empty"
+        },
+        {
+          "id": "to-parking-14", "kind": "traverse", "startMs": 80600, "endMs": 85800,
+          "startNodeId": "fork:LM1217", "endNodeId": "fork:PP1172", "edgeId": "fork:edge-215", "expectedLoadState": "empty"
         }
       ]
     }

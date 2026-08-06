@@ -21,7 +21,16 @@
     "planningHorizonMs": 20000,
     "executionHorizonMs": 5000,
     "planningTimeoutMs": 1000,
+    "candidateRouteCount": 3,
+    "timeQuantumMs": 100,
+    "maxSippScheduleAttempts": 200,
     "provisional": true
+  },
+  "assignment": {
+    "maxQueuedTasksPerVehicle": 1,
+    "taskAgeCreditPerSecondMs": 100,
+    "priorityClassCreditMs": 5000,
+    "dueTimePenaltyFactor": 2
   },
   "traffic": {
     "wait": {
@@ -56,4 +65,3 @@
     "batteryScheduling": false
   }
 }
-

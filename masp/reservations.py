@@ -56,6 +56,14 @@ class ReservationTable:
             sorted(self._by_id.values(), key=lambda item: (item.resource_id, *self._sort_key(item)))
         )
 
+    def for_vehicle(self, vehicle_id: str) -> tuple[Reservation, ...]:
+        return tuple(
+            sorted(
+                (item for item in self._by_id.values() if item.vehicle_id == vehicle_id),
+                key=lambda item: (item.resource_id, *self._sort_key(item)),
+            )
+        )
+
     # 找出所有和候选预留冲突的已有预留
     def conflicts_for(self, candidate: Reservation) -> tuple[Reservation, ...]:
         return tuple(
@@ -126,6 +134,38 @@ class ReservationTable:
             rows.append(candidate)
             rows.sort(key=self._sort_key)
         if batch:
+            self.version += 1
+
+    def replace_vehicle(self, vehicle_id: str, reservations: Iterable[Reservation]) -> None:
+        batch = tuple(reservations)
+        if any(item.vehicle_id != vehicle_id for item in batch):
+            raise ValueError("replacement batch must belong to one vehicle")
+        seen_ids: set[str] = set()
+        candidates_by_resource: dict[str, list[Reservation]] = defaultdict(list)
+        for candidate in batch:
+            existing_by_id = self._by_id.get(candidate.reservation_id)
+            if (
+                candidate.reservation_id in seen_ids
+                or existing_by_id is not None
+                and existing_by_id.vehicle_id != vehicle_id
+            ):
+                raise ValueError(f"duplicate reservation id {candidate.reservation_id!r}")
+            seen_ids.add(candidate.reservation_id)
+            conflicts = self.conflicts_for(candidate)
+            if conflicts:
+                self.conflict_rejections += 1
+                raise ReservationConflict(candidate, conflicts[0])
+            candidates_by_resource[candidate.resource_id].append(candidate)
+
+        previous = list(self.for_vehicle(vehicle_id))
+        for item in previous:
+            self._remove(item)
+        for candidate in batch:
+            self._by_id[candidate.reservation_id] = candidate
+            self._by_resource[candidate.resource_id].append(candidate)
+        for rows in self._by_resource.values():
+            rows.sort(key=self._sort_key)
+        if previous or batch:
             self.version += 1
 
     # 把某计划的预留从"候选"标记为"已提交"

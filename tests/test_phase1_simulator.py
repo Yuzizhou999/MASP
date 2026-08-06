@@ -39,7 +39,7 @@ def test_single_vehicle_completes_pickup_and_dropoff_deterministically() -> None
     assert first["tasks"][0]["state"] == "COMPLETED"
     assert first["vehicles"][0]["state"] == "IDLE"
     assert first["vehicles"][0]["loadState"] == "empty"
-    assert first["vehicles"][0]["currentNodeId"] == "fork:AP2121"
+    assert first["vehicles"][0]["currentNodeId"] == "fork:PP1172"
 
 
 def test_completion_events_precede_next_segment_entry_at_same_time() -> None:
@@ -70,15 +70,19 @@ def synthetic_documents() -> tuple[dict[str, Any], ...]:
             node("fork:A", "PP"),
             node("fork:P1", "AP"),
             node("fork:D1", "AP"),
+            node("fork:R1", "PP"),
             node("fork:C", "PP"),
             node("fork:P2", "AP"),
             node("fork:D2", "AP"),
+            node("fork:R2", "PP"),
         ],
         "edges": [
             {"id": "fork:e1", "robotGroup": "fork", "start": "fork:A", "end": "fork:P1"},
             {"id": "fork:e2", "robotGroup": "fork", "start": "fork:P1", "end": "fork:D1"},
             {"id": "fork:e3", "robotGroup": "fork", "start": "fork:C", "end": "fork:P2"},
             {"id": "fork:e4", "robotGroup": "fork", "start": "fork:P2", "end": "fork:D2"},
+            {"id": "fork:e5", "robotGroup": "fork", "start": "fork:D1", "end": "fork:R1"},
+            {"id": "fork:e6", "robotGroup": "fork", "start": "fork:D2", "end": "fork:R2"},
         ],
     }
     conflicts = {
@@ -87,6 +91,8 @@ def synthetic_documents() -> tuple[dict[str, Any], ...]:
             {"edgeId": "fork:e2", "ownResource": "edge:fork:e2", "conflictResources": []},
             {"edgeId": "fork:e3", "ownResource": "edge:fork:e3", "conflictResources": ["cross"]},
             {"edgeId": "fork:e4", "ownResource": "edge:fork:e4", "conflictResources": []},
+            {"edgeId": "fork:e5", "ownResource": "edge:fork:e5", "conflictResources": []},
+            {"edgeId": "fork:e6", "ownResource": "edge:fork:e6", "conflictResources": []},
         ]
     }
     workstations = {
@@ -130,7 +136,7 @@ def synthetic_scenario(second_start_ms: int) -> dict[str, Any]:
             "basedOnWorldRevision": 0,
             "createdAtMs": 1,
             "horizonEndMs": 100,
-            "committedUntilMs": dropoff_start + 10,
+            "committedUntilMs": dropoff_start + 20,
             "segments": [
                 {
                     "id": f"v{number}-edge-1",
@@ -169,6 +175,16 @@ def synthetic_scenario(second_start_ms: int) -> dict[str, Any]:
                     "startNodeId": f"fork:D{number}",
                     "endNodeId": f"fork:D{number}",
                     "expectedLoadState": "loaded",
+                },
+                {
+                    "id": f"v{number}-reposition",
+                    "kind": "traverse",
+                    "startMs": dropoff_start + 10,
+                    "endMs": dropoff_start + 20,
+                    "startNodeId": f"fork:D{number}",
+                    "endNodeId": f"fork:R{number}",
+                    "edgeId": "fork:e5" if number == 1 else "fork:e6",
+                    "expectedLoadState": "empty",
                 },
             ],
         }

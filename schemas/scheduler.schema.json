@@ -10,6 +10,7 @@
     "fleet",
     "serviceDefaults",
     "planner",
+    "assignment",
     "traffic",
     "safety",
     "features"
@@ -61,6 +62,9 @@
         "planningHorizonMs",
         "executionHorizonMs",
         "planningTimeoutMs",
+        "candidateRouteCount",
+        "timeQuantumMs",
+        "maxSippScheduleAttempts",
         "provisional"
       ],
       "properties": {
@@ -68,7 +72,26 @@
         "planningHorizonMs": {"type": "integer", "minimum": 1},
         "executionHorizonMs": {"type": "integer", "minimum": 1},
         "planningTimeoutMs": {"type": "integer", "minimum": 1},
+        "candidateRouteCount": {"type": "integer", "minimum": 1, "maximum": 20},
+        "timeQuantumMs": {"type": "integer", "minimum": 1},
+        "maxSippScheduleAttempts": {"type": "integer", "minimum": 1},
         "provisional": {"type": "boolean"}
+      }
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxQueuedTasksPerVehicle",
+        "taskAgeCreditPerSecondMs",
+        "priorityClassCreditMs",
+        "dueTimePenaltyFactor"
+      ],
+      "properties": {
+        "maxQueuedTasksPerVehicle": {"const": 1},
+        "taskAgeCreditPerSecondMs": {"type": "integer", "minimum": 0},
+        "priorityClassCreditMs": {"type": "integer", "minimum": 0},
+        "dueTimePenaltyFactor": {"type": "integer", "minimum": 0}
       }
     },
     "traffic": {

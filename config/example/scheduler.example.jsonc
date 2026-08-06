@@ -38,8 +38,25 @@
     "executionHorizonMs": 5000,
     // 单次规划允许使用的最长计算时间。
     "planningTimeoutMs": 1000,
+    // 取货、放货和撤离阶段各保留多少条候选空间路线。
+    "candidateRouteCount": 3,
+    // 所有计算得到的通行时间向上取整到该毫秒粒度。
+    "timeQuantumMs": 100,
+    // 单个候选路线组合最多尝试多少次整体延时。
+    "maxSippScheduleAttempts": 200,
     // 当前规划参数也是仿真预设值。
     "provisional": true
+  },
+
+  "assignment": {
+    // 当前每辆车同一时刻只保留一个活动任务。
+    "maxQueuedTasksPerVehicle": 1,
+    // 任务每等待 1 秒，从分配成本中减去的毫秒数，用于防止饥饿。
+    "taskAgeCreditPerSecondMs": 100,
+    // 每提高一级业务优先级，从分配成本中减去的毫秒数。
+    "priorityClassCreditMs": 5000,
+    // 预计超过截止时间时，对每毫秒迟到施加的成本倍数。
+    "dueTimePenaltyFactor": 2
   },
 
   "traffic": {

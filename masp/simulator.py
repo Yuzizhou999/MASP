@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from dataclasses import replace
 from statistics import mean
 from typing import Any
 
@@ -15,6 +16,7 @@ from .domain import (
     Vehicle,
     VehiclePlan,
     VehicleState,
+    projected_vehicle_revision,
 )
 from .events import DeterministicEventQueue, EventType, SimulationEvent
 from .plans import PlanValidator, ValidatedPlan
@@ -43,7 +45,7 @@ class DeterministicSimulator:
         self.vehicles = self._unique_by_id(vehicles, "vehicle_id", "vehicle")
         self.tasks = self._unique_by_id(tasks, "task_id", "task")
         self.plans = self._unique_by_id(plans, "plan_id", "plan")
-        self._plans_by_vehicle: dict[str, ValidatedPlan] = {}
+        self._plans_by_vehicle: dict[str, list[ValidatedPlan]] = {}
         self._prepare()
 
     @staticmethod
@@ -76,9 +78,59 @@ class DeterministicSimulator:
                 {"taskId": task.task_id},
             )
 
-        plans_by_vehicle: dict[str, VehiclePlan] = {}
         planned_tasks: set[str] = set()
         validator = PlanValidator(self.topology)
+        raw_plans_by_vehicle: dict[str, list[VehiclePlan]] = {}
+        for plan in self.plans.values():
+            raw_plans_by_vehicle.setdefault(plan.vehicle_id, []).append(plan)
+
+        for vehicle_id in sorted(raw_plans_by_vehicle):
+            vehicle = self.vehicles.get(vehicle_id)
+            if vehicle is None:
+                raise DomainError(
+                    "scenario.plan.reference",
+                    f"plans reference unknown vehicle {vehicle_id!r}",
+                )
+            projected = replace(vehicle, state_durations_ms=Counter())
+            previous_end_ms = 0
+            validated_for_vehicle: list[ValidatedPlan] = []
+            for plan in sorted(
+                raw_plans_by_vehicle[vehicle_id],
+                key=lambda item: (item.created_at_ms, item.plan_id),
+            ):
+                task = self.tasks.get(plan.task_id)
+                if task is None:
+                    raise DomainError(
+                        "scenario.plan.reference",
+                        f"plan {plan.plan_id!r} references an unknown task",
+                    )
+                if plan.created_at_ms < previous_end_ms:
+                    raise DomainError(
+                        "scenario.vehicle.plan_overlap",
+                        f"vehicle {vehicle_id!r} receives a new task before becoming idle",
+                    )
+                if plan.task_id in planned_tasks:
+                    raise DomainError(
+                        "scenario.task.multiple_plans",
+                        "a task cannot be assigned to more than one vehicle",
+                    )
+                validated = validator.validate(plan, projected, task)
+                if plan.horizon_end_ms > self.end_time_ms:
+                    raise DomainError(
+                        "scenario.plan.after_end",
+                        f"plan {plan.plan_id!r} exceeds scenario endTimeMs",
+                    )
+                planned_tasks.add(plan.task_id)
+                validated_for_vehicle.append(validated)
+                previous_end_ms = plan.segments[-1].end_ms
+                projected.current_node_id = validated.final_node_id
+                projected.current_edge_id = None
+                projected.load_state = validated.final_load_state
+                projected.state = VehicleState.IDLE
+                projected.revision = projected_vehicle_revision(plan)
+                projected.available_at_ms = previous_end_ms
+            self._plans_by_vehicle[vehicle_id] = validated_for_vehicle
+
         for plan in sorted(
             self.plans.values(), key=lambda item: (item.created_at_ms, item.vehicle_id, item.plan_id)
         ):
@@ -89,31 +141,13 @@ class DeterministicSimulator:
                     "scenario.plan.reference",
                     f"plan {plan.plan_id!r} references an unknown vehicle or task",
                 )
-            if plan.vehicle_id in plans_by_vehicle:
-                raise DomainError(
-                    "scenario.vehicle.multiple_plans",
-                    "phase 1 supports one complete task plan per vehicle",
-                )
-            if plan.task_id in planned_tasks:
-                raise DomainError(
-                    "scenario.task.multiple_plans",
-                    "a task cannot be assigned to more than one vehicle",
-                )
-            validated = validator.validate(plan, vehicle, task)
-            if plan.horizon_end_ms > self.end_time_ms:
-                raise DomainError(
-                    "scenario.plan.after_end",
-                    f"plan {plan.plan_id!r} exceeds scenario endTimeMs",
-                )
-            plans_by_vehicle[plan.vehicle_id] = plan
-            planned_tasks.add(plan.task_id)
-            self._plans_by_vehicle[plan.vehicle_id] = validated
+            self._schedule_plan(plan)
 
         reservation_batch: list[Reservation] = []
         for vehicle_id in sorted(self.vehicles):
             vehicle = self.vehicles[vehicle_id]
-            validated = self._plans_by_vehicle.get(vehicle_id)
-            if validated is None:
+            validated_plans = self._plans_by_vehicle.get(vehicle_id, [])
+            if not validated_plans:
                 reservation_batch.extend(
                     self._occupancy_reservations(
                         vehicle,
@@ -126,31 +160,35 @@ class DeterministicSimulator:
                 )
                 continue
 
-            plan = validated.plan
-            first = plan.segments[0]
-            last = plan.segments[-1]
-            reservation_batch.extend(
-                self._occupancy_reservations(
-                    vehicle,
-                    plan_id=plan.plan_id,
-                    node_id=vehicle.current_node_id or "",
-                    start_ms=0,
-                    end_ms=first.start_ms,
-                    label="initial-hold",
+            cursor_ms = 0
+            cursor_node_id = vehicle.current_node_id or ""
+            for index, validated in enumerate(validated_plans):
+                plan = validated.plan
+                first = plan.segments[0]
+                last = plan.segments[-1]
+                reservation_batch.extend(
+                    self._occupancy_reservations(
+                        vehicle,
+                        plan_id=plan.plan_id,
+                        node_id=cursor_node_id,
+                        start_ms=cursor_ms,
+                        end_ms=first.start_ms,
+                        label=f"pre-plan-{index}",
+                    )
                 )
-            )
-            reservation_batch.extend(validated.reservations())
+                reservation_batch.extend(validated.reservations())
+                cursor_ms = last.end_ms
+                cursor_node_id = validated.final_node_id
             reservation_batch.extend(
                 self._occupancy_reservations(
                     vehicle,
-                    plan_id=plan.plan_id,
-                    node_id=validated.final_node_id,
-                    start_ms=last.end_ms,
+                    plan_id=validated_plans[-1].plan.plan_id,
+                    node_id=cursor_node_id,
+                    start_ms=cursor_ms,
                     end_ms=self.end_time_ms,
                     label="final-hold",
                 )
             )
-            self._schedule_plan(plan)
 
         self.reservations.insert_batch(reservation_batch)
 
@@ -260,6 +298,12 @@ class DeterministicSimulator:
         if event.event_type is EventType.PLAN_COMPUTED:
             return
         if event.event_type is EventType.PLAN_COMMITTED:
+            if plan.based_on_vehicle_revision != vehicle.revision:
+                raise DomainError(
+                    "execution.plan.vehicle_revision_stale",
+                    f"plan {plan.plan_id!r} expects vehicle revision "
+                    f"{plan.based_on_vehicle_revision}, actual revision is {vehicle.revision}",
+                )
             task.transition(TaskState.EN_ROUTE_PICKUP, event.time_ms)
             vehicle.transition(VehicleState.TO_PICKUP, event.time_ms)
             vehicle.active_task_id = task.task_id
@@ -296,12 +340,25 @@ class DeterministicSimulator:
                 node.get("headings", {}).get(vehicle.robot_group, vehicle.heading_rad)
             )
             vehicle.revision += 1
+            if (
+                vehicle.state is VehicleState.REPOSITIONING
+                and plan is not None
+                and segment is plan.segments[-1]
+            ):
+                vehicle.transition(VehicleState.IDLE, event.time_ms)
+                vehicle.plan_id = None
+                vehicle.plan_revision = None
+                vehicle.committed_until_ms = event.time_ms
         elif event.event_type is EventType.VEHICLE_WAIT_STARTED:
             vehicle.waiting_resume_state = vehicle.state
             vehicle.transition(VehicleState.WAITING, event.time_ms)
         elif event.event_type is EventType.VEHICLE_WAIT_ENDED:
             resume = vehicle.waiting_resume_state
-            if resume not in {VehicleState.TO_PICKUP, VehicleState.TO_DROPOFF}:
+            if resume not in {
+                VehicleState.TO_PICKUP,
+                VehicleState.TO_DROPOFF,
+                VehicleState.REPOSITIONING,
+            }:
                 raise DomainError(
                     "execution.wait.resume_invalid", "wait has no valid resume state"
                 )
@@ -322,11 +379,15 @@ class DeterministicSimulator:
             vehicle.load_state = LoadState.EMPTY
             vehicle.payload_id = None
             task.transition(TaskState.COMPLETED, event.time_ms)
-            vehicle.transition(VehicleState.IDLE, event.time_ms)
             vehicle.active_task_id = None
-            vehicle.plan_id = None
-            vehicle.plan_revision = None
-            vehicle.committed_until_ms = event.time_ms
+            has_repositioning = plan is not None and segment is not plan.segments[-1]
+            if has_repositioning:
+                vehicle.transition(VehicleState.REPOSITIONING, event.time_ms)
+            else:
+                vehicle.transition(VehicleState.IDLE, event.time_ms)
+                vehicle.plan_id = None
+                vehicle.plan_revision = None
+                vehicle.committed_until_ms = event.time_ms
 
     def _record(self, event: SimulationEvent) -> None:
         payload = dict(sorted(event.payload.items()))

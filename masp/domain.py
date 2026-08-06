@@ -32,6 +32,7 @@ class VehicleState(str, Enum):
     PICKING = "PICKING"
     TO_DROPOFF = "TO_DROPOFF"
     DROPPING = "DROPPING"
+    REPOSITIONING = "REPOSITIONING"
     WAITING = "WAITING"
     REVERSING = "REVERSING"
     CHARGING = "CHARGING"
@@ -87,10 +88,20 @@ VEHICLE_TRANSITIONS: dict[VehicleState, set[VehicleState]] = {
         VehicleState.REVERSING,
         VehicleState.FAULT,
     },
-    VehicleState.DROPPING: {VehicleState.IDLE, VehicleState.FAULT},
+    VehicleState.DROPPING: {
+        VehicleState.IDLE,
+        VehicleState.REPOSITIONING,
+        VehicleState.FAULT,
+    },
+    VehicleState.REPOSITIONING: {
+        VehicleState.IDLE,
+        VehicleState.WAITING,
+        VehicleState.FAULT,
+    },
     VehicleState.WAITING: {
         VehicleState.TO_PICKUP,
         VehicleState.TO_DROPOFF,
+        VehicleState.REPOSITIONING,
         VehicleState.FAULT,
     },
     VehicleState.REVERSING: {VehicleState.WAITING, VehicleState.FAULT},
@@ -291,6 +302,23 @@ class PlanSegment:
             command_payload=dict(value.get("commandPayload", {})),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self.segment_id,
+            "kind": self.kind.value,
+            "startMs": self.start_ms,
+            "endMs": self.end_ms,
+            "startNodeId": self.start_node_id,
+            "endNodeId": self.end_node_id,
+            "expectedLoadState": self.expected_load_state.value,
+            "resourceIds": list(self.resource_ids),
+        }
+        if self.edge_id is not None:
+            result["edgeId"] = self.edge_id
+        if self.command_payload:
+            result["commandPayload"] = self.command_payload
+        return result
+
 # 一辆车的完整计划
 @dataclass(frozen=True)
 class VehiclePlan:
@@ -319,3 +347,36 @@ class VehiclePlan:
             committed_until_ms=int(value["committedUntilMs"]),
             segments=tuple(PlanSegment.from_dict(item) for item in value["segments"]),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.plan_id,
+            "revision": self.revision,
+            "vehicleId": self.vehicle_id,
+            "taskId": self.task_id,
+            "basedOnVehicleRevision": self.based_on_vehicle_revision,
+            "basedOnWorldRevision": self.based_on_world_revision,
+            "createdAtMs": self.created_at_ms,
+            "horizonEndMs": self.horizon_end_ms,
+            "committedUntilMs": self.committed_until_ms,
+            "segments": [segment.to_dict() for segment in self.segments],
+        }
+
+
+def projected_vehicle_revision(plan: VehiclePlan) -> int:
+    """Return the vehicle revision after deterministic execution of a full plan."""
+    dropoff_index = next(
+        (
+            index
+            for index, segment in enumerate(plan.segments)
+            if segment.kind is SegmentKind.DROPOFF
+        ),
+        len(plan.segments) - 1,
+    )
+    reposition_completion = int(dropoff_index < len(plan.segments) - 1)
+    return (
+        plan.based_on_vehicle_revision
+        + 1
+        + 2 * len(plan.segments)
+        + reposition_completion
+    )

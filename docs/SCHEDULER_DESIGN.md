@@ -343,10 +343,14 @@ stateDiagram-v2
     PICKING --> TO_DROPOFF: 取货完成
     TO_DROPOFF --> DROPPING: 到达放货点
     DROPPING --> IDLE: 放货完成
+    DROPPING --> REPOSITIONING: 放货后撤离禁止等待节点
+    REPOSITIONING --> IDLE: 到达恢复点
     TO_PICKUP --> WAITING
     TO_DROPOFF --> WAITING
+    REPOSITIONING --> WAITING
     WAITING --> TO_PICKUP
     WAITING --> TO_DROPOFF
+    WAITING --> REPOSITIONING
     TO_PICKUP --> REVERSING: 恢复动作
     TO_DROPOFF --> REVERSING: 恢复动作
     REVERSING --> WAITING
@@ -357,6 +361,7 @@ stateDiagram-v2
     PICKING --> FAULT
     TO_DROPOFF --> FAULT
     DROPPING --> FAULT
+    REPOSITIONING --> FAULT
     WAITING --> FAULT
     REVERSING --> FAULT
     FAULT --> STOPPED
@@ -881,14 +886,16 @@ REPLAN_TRIGGERED
 同一时间戳使用固定优先级和递增序列号排序。例如：
 
 1. 安全/故障事件。
-2. 车辆离开资源。
-3. 作业完成。
-4. 车辆进入资源。
-5. 新任务释放。
-6. 周期规划触发。
-7. 指标采样。
+2. 车辆离开资源或等待结束。
+3. 取货/放货完成。
+4. 新任务释放。
+5. 任务分配。
+6. 计划计算。
+7. 计划提交。
+8. 车辆进入资源、开始等待或开始取放货服务。
+9. 指标采样。
 
-固定事件顺序是确定性回放的必要条件。
+任务释放、分配和计划提交必须排在同时间戳的动作进入之前，使第一段动作可以从计划创建时刻立即开始，同时仍能通过车辆 `revision` 校验。固定事件顺序是确定性回放的必要条件。
 
 ### 17.3 调度循环
 
@@ -1446,7 +1453,7 @@ pytest -q
 - `masp/plans.py` 校验边方向、车型、路径连续性、载荷、等待权限、服务时长和取放货顺序。
 - `masp/simulator.py` 执行显式计划，输出事件日志、回放摘要、任务吞吐及车辆状态时间。
 - `schemas/plan.schema.json` 和 `schemas/simulation-scenario.schema.json` 定义阶段 1 输入格式。
-- `scenarios/phase1-single-vehicle.json` 已在实际统一地图上完成一次取货和放货；自动任务分配与找路仍属于阶段 2。
+- `scenarios/phase1-single-vehicle.json` 已在实际统一地图上完成一次取货和放货，并在放货后从禁止等待的 AP 撤离到 PP；自动任务分配与找路仍属于阶段 2。
 - 两车重叠占用同一冲突资源时，整个预留批次会被拒绝；采用半开区间后，前车结束时刻等于后车开始时刻可以安全交接。
 
 复现命令：
@@ -1466,6 +1473,24 @@ pytest -q
 - 服务时间和载荷切换。
 
 退出条件：无冲突完成持续任务流，且所有计划满足等待策略。
+
+实施状态（2026-08-05）：已完成。
+
+- `masp/assignment.py` 完成车型、任务状态、载荷、工位能力和可达性过滤，并使用最小费用最大流进行批量分配；某个车辆-任务组合规划失败时会排除该组合并尝试其他匹配。
+- `masp/motion.py` 按空载/载货、前进/倒退、边限速、曲率、加减速和旋转约束估算通行时间，并向上取整到调度时间粒度。
+- `masp/routing.py` 在对应车型的有向子图上生成 K 条候选路线。
+- `masp/sipp.py` 对道路、冲突区、节点和工位求共同安全区间，只在策略允许的节点显式等待；AP 服务到达即开始，放货后自动撤离到配置的 PP/CP 恢复点。
+- `masp/phase2.py` 按任务释放时间持续规划，车辆完成任务并撤离后可再次接单，旧停车尾预留与新计划使用原子替换。
+- `schemas/phase2-scenario.schema.json`、`scenarios/phase2-continuous-tasks.json` 和 `tools/run_phase2.py` 提供可复现的持续任务流输入与运行入口。
+- 示例中 2 辆车完成 3 个分时任务，其中 1 辆车连续执行 2 个任务；自动等待仅发生在允许等待的 PP，预留冲突为 0。
+- 本阶段仍为仿真验证；RH-PP 滚动窗口、Top-K 优先级协调、吞吐基准比较属于阶段 3。
+
+复现命令：
+
+```powershell
+python tools/run_phase2.py scenarios/phase2-continuous-tasks.json
+pytest -q
+```
 
 ### 阶段 3：RH-PP 与吞吐基线
 
