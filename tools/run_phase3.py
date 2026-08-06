@@ -90,6 +90,7 @@ def execute_policy(
         workstations,
         scheduler,
         schemas,
+        traffic_zones=traffic_zones,
     ).run()
     return planning, planned_scenario, simulation
 

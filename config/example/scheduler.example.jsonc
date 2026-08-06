@@ -104,6 +104,18 @@
       "maxDurationMs": 15000,
       // 倒退前必须一次性获得整段资源，不能边退边抢占。
       "requiresAtomicReservation": true
+    },
+    "deadlock": {
+      // 每轮提交前根据结构化 blocker 证据构建车辆等待图。
+      "waitGraphEnabled": true,
+      // 窄路入口到出口后的安全等待点必须作为一个原子资源束排程。
+      "atomicZoneReservation": true,
+      // 每持续阻塞 5 秒增加一级车辆优先级年龄。
+      "starvationAgeStepMs": 5000,
+      // 恢复点至少冻结到该监督时限，防止恢复动作完成后立即被重新占用。
+      "recoveryTimeoutMs": 30000,
+      // 同一等待环重复恢复两次仍无进展时，停止继续尝试并进入安全停止。
+      "maxRecoveryAttempts": 2
     }
   },
 

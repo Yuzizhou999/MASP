@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masp.local/schemas/phase4-scenario.schema.json",
+  "title": "MASP phase 4 deadlock supervision scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scenarioId",
+    "seed",
+    "nowMs",
+    "endTimeMs",
+    "zoneAdmission",
+    "recoverableDeadlock",
+    "unrecoverableDeadlock"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "scenarioId": {"type": "string", "minLength": 1},
+    "seed": {"type": "integer", "minimum": 0},
+    "nowMs": {"type": "integer", "minimum": 0},
+    "endTimeMs": {"type": "integer", "minimum": 1},
+    "zoneAdmission": {"$ref": "#/$defs/zoneAdmission"},
+    "recoverableDeadlock": {"$ref": "#/$defs/deadlockCase"},
+    "unrecoverableDeadlock": {"$ref": "#/$defs/deadlockCase"}
+  },
+  "$defs": {
+    "reservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "resourceId", "vehicleId", "startMs", "endMs"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "resourceId": {"type": "string", "minLength": 1},
+        "vehicleId": {"type": "string", "minLength": 1},
+        "startMs": {"type": "integer", "minimum": 0},
+        "endMs": {"type": "integer", "minimum": 1}
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vehicleId",
+        "resourceIds",
+        "startMs",
+        "endMs",
+        "blockedSinceMs",
+        "hasAlternative"
+      ],
+      "properties": {
+        "vehicleId": {"type": "string", "minLength": 1},
+        "resourceIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "startMs": {"type": "integer", "minimum": 0},
+        "endMs": {"type": "integer", "minimum": 1},
+        "blockedSinceMs": {"type": "integer", "minimum": 0},
+        "hasAlternative": {"type": "boolean"}
+      }
+    },
+    "recoveryVehicle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vehicleId",
+        "robotGroup",
+        "loadState",
+        "recoveryNodeId",
+        "waitSinceMs",
+        "priorityClass",
+        "heldResourceIds"
+      ],
+      "properties": {
+        "vehicleId": {"type": "string", "minLength": 1},
+        "robotGroup": {"enum": ["fork", "jack"]},
+        "loadState": {"enum": ["empty", "loaded"]},
+        "recoveryNodeId": {"type": "string", "minLength": 1},
+        "waitSinceMs": {"type": "integer", "minimum": 0},
+        "priorityClass": {"type": "integer", "minimum": 0},
+        "currentNodeId": {"type": "string", "minLength": 1},
+        "currentEdgeId": {"type": "string", "minLength": 1},
+        "edgeProgress": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "backtrackEdgeIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "heldResourceIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["currentNodeId", "backtrackEdgeIds"],
+          "not": {"required": ["currentEdgeId"]}
+        },
+        {
+          "required": ["currentEdgeId", "edgeProgress"],
+          "not": {"required": ["currentNodeId"]}
+        }
+      ]
+    },
+    "deadlockCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "evidenceEdgeIds",
+        "reservations",
+        "requirements",
+        "recoveryVehicles"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "evidenceEdgeIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reservations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/reservation"},
+          "minItems": 1
+        },
+        "requirements": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/requirement"},
+          "minItems": 1
+        },
+        "recoveryVehicles": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/recoveryVehicle"}
+        }
+      }
+    },
+    "zoneAdmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zoneId",
+        "vehicleId",
+        "robotGroup",
+        "startNodeId",
+        "loadState",
+        "edgeIds",
+        "blockingReservation"
+      ],
+      "properties": {
+        "zoneId": {"type": "string", "minLength": 1},
+        "vehicleId": {"type": "string", "minLength": 1},
+        "robotGroup": {"enum": ["fork", "jack"]},
+        "startNodeId": {"type": "string", "minLength": 1},
+        "loadState": {"enum": ["empty", "loaded"]},
+        "edgeIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        },
+        "blockingReservation": {"$ref": "#/$defs/reservation"}
+      }
+    }
+  }
+}

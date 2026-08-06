@@ -145,7 +145,7 @@
     "traffic": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["wait", "reverse"],
+      "required": ["wait", "reverse", "deadlock"],
       "properties": {
         "wait": {
           "type": "object",
@@ -185,6 +185,24 @@
             "maxDistanceM": {"type": "number", "exclusiveMinimum": 0},
             "maxDurationMs": {"type": "integer", "minimum": 1},
             "requiresAtomicReservation": {"const": true}
+          }
+        },
+        "deadlock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "waitGraphEnabled",
+            "atomicZoneReservation",
+            "starvationAgeStepMs",
+            "recoveryTimeoutMs",
+            "maxRecoveryAttempts"
+          ],
+          "properties": {
+            "waitGraphEnabled": {"const": true},
+            "atomicZoneReservation": {"const": true},
+            "starvationAgeStepMs": {"type": "integer", "minimum": 1},
+            "recoveryTimeoutMs": {"type": "integer", "minimum": 1},
+            "maxRecoveryAttempts": {"type": "integer", "minimum": 1}
           }
         }
       }

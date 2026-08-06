@@ -67,6 +67,11 @@ def main() -> None:
         type=Path,
         default=ROOT / "config/scheduler.json",
     )
+    parser.add_argument(
+        "--traffic-zones",
+        type=Path,
+        default=ROOT / "config/traffic-zones.json",
+    )
     parser.add_argument("--schemas", type=Path, default=ROOT / "schemas")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
@@ -79,6 +84,7 @@ def main() -> None:
         else ROOT / "runs" / scenario["scenarioId"]
     )
     scheduler = load_json(args.scheduler)
+    traffic_zones = load_json(args.traffic_zones)
     simulator = build_simulator(
         scenario,
         load_json(args.map),
@@ -86,6 +92,7 @@ def main() -> None:
         load_json(args.workstations),
         scheduler,
         args.schemas,
+        traffic_zones=traffic_zones,
     )
     result = simulator.run()
 
@@ -118,6 +125,7 @@ def main() -> None:
             "conflictsSha256": sha256_file(args.conflicts),
             "workstationsSha256": sha256_file(args.workstations),
             "schedulerSha256": sha256_file(args.scheduler),
+            "trafficZonesSha256": sha256_file(args.traffic_zones),
             "rlCheckpointSha256": None,
         },
         "runtime": {

@@ -17,6 +17,37 @@
     {"nodeId": "jack:CP49", "allowedRobotGroups": ["jack"]},
     {"nodeId": "jack:CP50", "allowedRobotGroups": ["jack"]}
   ],
-  "zones": []
+  "zones": [
+    {
+      "id": "zone-jack-pp363-pp365",
+      "memberNodeIds": ["shared:LM182", "shared:LM368"],
+      "memberEdgeIds": [
+        "fork:edge-35",
+        "jack:edge-720",
+        "jack:edge-721"
+      ],
+      "entryEdgeIds": [
+        "fork:edge-30",
+        "jack:edge-170",
+        "jack:edge-216",
+        "jack:edge-247",
+        "jack:edge-320",
+        "jack:edge-342",
+        "jack:edge-811"
+      ],
+      "exitEdgeIds": [
+        "fork:edge-12",
+        "jack:edge-169",
+        "jack:edge-217",
+        "jack:edge-248",
+        "jack:edge-319",
+        "jack:edge-343",
+        "jack:edge-810"
+      ],
+      "capacity": 1,
+      "passingAllowed": false,
+      "directionalMode": "single_direction_at_a_time",
+      "recoveryNodeIds": ["jack:PP363", "jack:PP365"]
+    }
+  ]
 }
-

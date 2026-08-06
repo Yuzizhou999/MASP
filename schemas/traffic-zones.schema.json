@@ -42,14 +42,17 @@
         ],
         "properties": {
           "id": {"type": "string", "minLength": 1},
-          "memberNodeIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "memberNodeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
           "memberEdgeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
           "entryEdgeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
           "exitEdgeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
-          "capacity": {"type": "integer", "minimum": 1},
-          "passingAllowed": {"type": "boolean"},
-          "directionalMode": {"enum": ["single_direction_at_a_time", "unrestricted"]},
-          "recoveryNodeIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+          "capacity": {
+            "description": "阶段 4 MVP 仅支持单容量互斥区域。",
+            "const": 1
+          },
+          "passingAllowed": {"const": false},
+          "directionalMode": {"const": "single_direction_at_a_time"},
+          "recoveryNodeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true}
         }
       }
     }

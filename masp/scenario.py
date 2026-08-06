@@ -101,6 +101,7 @@ def build_simulator(
     workstations: dict[str, Any],
     scheduler: dict[str, Any],
     schemas_dir: Path,
+    traffic_zones: dict[str, Any] | None = None,
 ) -> DeterministicSimulator:
     validate_scenario_document(scenario, schemas_dir)
     # 把场景里每个任务 JSON 变成 TransportTask 对象
@@ -114,7 +115,7 @@ def build_simulator(
         for item in scenario["tasks"]
     ]
     return DeterministicSimulator(
-        topology=MapTopology(model, conflicts, workstations),
+        topology=MapTopology(model, conflicts, workstations, traffic_zones),
         vehicles=[Vehicle.from_dict(item) for item in scenario["vehicles"]],
         tasks=tasks,
         plans=[VehiclePlan.from_dict(item) for item in scenario["plans"]],
@@ -143,7 +144,7 @@ def build_phase2_plans(
         )
         for item in scenario["tasks"]
     ]
-    topology = MapTopology(model, conflicts, workstations)
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
     planning = Phase2Planner(
         topology, model, profiles, scheduler, traffic_zones
     ).plan(vehicles, tasks, int(scenario["endTimeMs"]))
@@ -184,7 +185,7 @@ def build_phase3_plans(
         )
         for item in scenario["tasks"]
     ]
-    topology = MapTopology(model, conflicts, workstations)
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
     planning = RollingHorizonPlanner(
         topology,
         model,

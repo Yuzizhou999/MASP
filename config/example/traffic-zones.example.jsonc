@@ -22,19 +22,28 @@
     {"nodeId": "jack:CP50", "allowedRobotGroups": ["jack"]}
   ],
 
-  // 阶段 0 暂不划分窄路区，因此当前为空；阶段 4 会根据地图补充。
+  // 阶段 4 MVP 只支持 capacity=1、禁止会车、同一时刻单方向通行的区域。
   "zones": [
-    // 单个区域的格式如下。示例中的 ID 必须替换为地图中的真实 ID 后才能启用：
-    // {
-    //   "id": "zone-narrow-001",                  // 区域唯一编号。
-    //   "memberNodeIds": ["fork:LM..."],          // 区域内部节点。
-    //   "memberEdgeIds": ["fork:edge-..."],       // 区域内部道路。
-    //   "entryEdgeIds": ["fork:edge-..."],        // 进入区域的道路。
-    //   "exitEdgeIds": ["fork:edge-..."],         // 离开区域的道路。
-    //   "capacity": 1,                             // 区域最多同时容纳的车辆数。
-    //   "passingAllowed": false,                   // 区域内是否允许会车。
-    //   "directionalMode": "single_direction_at_a_time",
-    //   "recoveryNodeIds": ["fork:PP1171"]        // 堵塞时可退出到的恢复点。
-    // }
+    {
+      "id": "zone-jack-pp363-pp365",              // PP363 与 PP365 之间的真实窄路。
+      "memberNodeIds": ["shared:LM182", "shared:LM368"],
+      "memberEdgeIds": [
+        "fork:edge-35", "jack:edge-720", "jack:edge-721"
+      ],
+      "entryEdgeIds": [
+        "fork:edge-30",
+        "jack:edge-170", "jack:edge-216", "jack:edge-247",
+        "jack:edge-320", "jack:edge-342", "jack:edge-811"
+      ],
+      "exitEdgeIds": [
+        "fork:edge-12",
+        "jack:edge-169", "jack:edge-217", "jack:edge-248",
+        "jack:edge-319", "jack:edge-343", "jack:edge-810"
+      ],
+      "capacity": 1,
+      "passingAllowed": false,
+      "directionalMode": "single_direction_at_a_time",
+      "recoveryNodeIds": ["jack:PP363", "jack:PP365"]
+    }
   ]
 }

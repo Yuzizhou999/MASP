@@ -60,6 +60,13 @@
       "maxDistanceM": 5.0,
       "maxDurationMs": 15000,
       "requiresAtomicReservation": true
+    },
+    "deadlock": {
+      "waitGraphEnabled": true,
+      "atomicZoneReservation": true,
+      "starvationAgeStepMs": 5000,
+      "recoveryTimeoutMs": 30000,
+      "maxRecoveryAttempts": 2
     }
   },
   "safety": {

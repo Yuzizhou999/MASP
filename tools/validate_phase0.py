@@ -295,6 +295,8 @@ def validate_repository(
 
     for value in duplicate_values(zone["id"] for zone in traffic_zones["zones"]):
         issues.append(ValidationIssue("error", "zones.duplicate", f"duplicate traffic zone id {value!r}"))
+    claimed_zone_edges: dict[str, str] = {}
+    claimed_zone_nodes: dict[str, str] = {}
     for zone in traffic_zones["zones"]:
         referenced_nodes = set(zone["memberNodeIds"]) | set(zone["recoveryNodeIds"])
         referenced_edges = set(zone["memberEdgeIds"]) | set(zone["entryEdgeIds"]) | set(zone["exitEdgeIds"])
@@ -304,6 +306,109 @@ def validate_repository(
             issues.append(ValidationIssue("error", "zones.edges", f"zone {zone['id']!r} references unknown edges"))
         if not set(zone["recoveryNodeIds"]) <= recovery_node_ids:
             issues.append(ValidationIssue("error", "zones.recovery", f"zone {zone['id']!r} references undeclared recovery nodes"))
+        if (
+            zone["capacity"] != 1
+            or zone["passingAllowed"] is not False
+            or zone["directionalMode"] != "single_direction_at_a_time"
+        ):
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "zones.unsupported_capacity",
+                    f"zone {zone['id']!r} must be a single-capacity no-passing zone",
+                )
+            )
+        member_nodes = set(zone["memberNodeIds"])
+        controlled_edges = (
+            set(zone["memberEdgeIds"])
+            | set(zone["entryEdgeIds"])
+            | set(zone["exitEdgeIds"])
+        )
+        for edge_id in sorted(controlled_edges):
+            previous_zone = claimed_zone_edges.get(edge_id)
+            if previous_zone is not None and previous_zone != zone["id"]:
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "zones.edge.overlap",
+                        f"edge {edge_id!r} belongs to zones {previous_zone!r} and {zone['id']!r}",
+                    )
+                )
+            else:
+                claimed_zone_edges[edge_id] = zone["id"]
+        for node_id in sorted(member_nodes):
+            previous_zone = claimed_zone_nodes.get(node_id)
+            if previous_zone is not None and previous_zone != zone["id"]:
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "zones.node.overlap",
+                        f"node {node_id!r} belongs to zones {previous_zone!r} and {zone['id']!r}",
+                    )
+                )
+            else:
+                claimed_zone_nodes[node_id] = zone["id"]
+        for edge_id in zone["memberEdgeIds"]:
+            edge = edges_by_id.get(edge_id)
+            if edge is not None and not {edge["start"], edge["end"]} & member_nodes:
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "zones.member.direction",
+                        f"zone {zone['id']!r} member edge {edge_id!r} does not touch a member node",
+                    )
+                )
+        for edge_id in zone["entryEdgeIds"]:
+            edge = edges_by_id.get(edge_id)
+            if edge is not None and not (
+                edge["start"] not in member_nodes and edge["end"] in member_nodes
+            ):
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "zones.entry.direction",
+                        f"zone {zone['id']!r} entry edge {edge_id!r} must point into the zone",
+                    )
+                )
+        for edge_id in zone["exitEdgeIds"]:
+            edge = edges_by_id.get(edge_id)
+            if edge is not None and not (
+                edge["start"] in member_nodes and edge["end"] not in member_nodes
+            ):
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "zones.exit.direction",
+                        f"zone {zone['id']!r} exit edge {edge_id!r} must point out of the zone",
+                    )
+                )
+        expected_members = {
+            edge_id
+            for edge_id, edge in edges_by_id.items()
+            if edge["start"] in member_nodes and edge["end"] in member_nodes
+        }
+        expected_entries = {
+            edge_id
+            for edge_id, edge in edges_by_id.items()
+            if edge["start"] not in member_nodes and edge["end"] in member_nodes
+        }
+        expected_exits = {
+            edge_id
+            for edge_id, edge in edges_by_id.items()
+            if edge["start"] in member_nodes and edge["end"] not in member_nodes
+        }
+        if (
+            set(zone["memberEdgeIds"]) != expected_members
+            or set(zone["entryEdgeIds"]) != expected_entries
+            or set(zone["exitEdgeIds"]) != expected_exits
+        ):
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "zones.boundary.incomplete",
+                    f"zone {zone['id']!r} must classify every edge touching its member nodes",
+                )
+            )
 
     planner = scheduler["planner"]
     if planner["executionHorizonMs"] > planner["planningHorizonMs"]:

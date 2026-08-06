@@ -46,3 +46,19 @@ python tools/run_phase3.py scenarios/phase3-rh-pp-benchmark.json
 3. Top-K 和固定策略的规划 p95 均小于配置的规划周期。
 
 `safeUntilMs` 可能晚于名义执行窗口，因为车辆不能停在 LM/AP；提交边界必须继续延伸到下一个允许等待的 PP/CP。
+
+## 阶段 4 死锁监督与倒退恢复
+
+`phase4-deadlock-recovery.json` 使用真实地图中的三组证据：
+
+1. `jack:PP363 → shared:LM182 → shared:LM368 → jack:PP365` 窄路。对向车辆占用共享 `zone:zone-jack-pp363-pp365` 时，候选车必须在 PP363 等待，入口到出口的区域预留保持连续，内部 LM 不产生等待。
+2. `fork:edge-323` 上的车辆被 `shared:LM1254` 阻塞时，从 99% 边进度沿当前边倒退 4.76388 m 到 `fork:PP1173`。地图没有该方向的反向边，因此该用例验证的是动态恢复倒退，而不是预定义倒向边。
+3. `fork:LM1028 → LM1031 → LM2472 → LM2473 → LM1028` 四车环没有 5 m 内的合法恢复计划，监督器必须冻结相关资源并输出安全停止。
+
+运行：
+
+```powershell
+python tools/run_phase4.py scenarios/phase4-deadlock-recovery.json
+```
+
+阶段 4 场景直接给出固定车辆意图和运行时 blocker 证据，不经过任务分配器，避免分配器交换任务后绕开目标窄路。

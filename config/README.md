@@ -50,6 +50,14 @@ python tools/run_phase3.py scenarios/phase3-rh-pp-benchmark.json
 
 调试单一策略时可添加 `--policy congestion` 或 `--policy random --seed 1`；只检查 Top-K 主场景而不运行完整基准时可添加 `--skip-benchmark`。
 
+阶段 4 的窄路原子前瞻、等待图监督和倒退恢复场景可运行：
+
+```powershell
+python tools/run_phase4.py scenarios/phase4-deadlock-recovery.json
+```
+
+结果写入 `runs/phase4-deadlock-recovery/`。`summary.json` 同时记录真实窄路入口外等待、两车等待环的沿当前边倒退，以及四车环无合法恢复路径时的安全停止。阶段 4 MVP 仅接受 `capacity=1`、禁止会车、同一时刻单方向通行的交通区；其他容量配置会在 Schema 或启动校验时被拒绝。
+
 ## 不要手工修改
 
 `generated/` 目录下的统一地图、冲突资源和工位文件由工具生成，不应手工添加注释或修改内容，否则下次构建会被覆盖。

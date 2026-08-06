@@ -43,7 +43,7 @@ def test_phase0_repository_is_valid_for_simulation(
         "conflictPairCount": 6266,
         "workstationCount": 133,
         "vehicleCount": 14,
-        "trafficZoneCount": 0,
+        "trafficZoneCount": 1,
         "recoveryNodeCount": 15,
     }
 
@@ -116,6 +116,57 @@ def test_workstations_cover_every_ap_and_block_during_service(
     issues, _ = validate(assets)
     assert "workstations.id.duplicate" in error_codes(issues)
     assert "workstations.node.duplicate" in error_codes(issues)
+
+
+def test_traffic_zone_must_classify_every_physical_boundary_edge(
+    phase0_assets: dict[str, dict[str, Any]],
+) -> None:
+    assets = deepcopy(phase0_assets)
+    assets["traffic_zones"]["zones"][0]["entryEdgeIds"].remove("fork:edge-30")
+
+    issues, _ = validate(assets)
+
+    assert "zones.boundary.incomplete" in error_codes(issues)
+
+
+def test_traffic_zones_cannot_share_any_controlled_edge(
+    phase0_assets: dict[str, dict[str, Any]],
+) -> None:
+    for field in ("memberEdgeIds", "entryEdgeIds", "exitEdgeIds"):
+        assets = deepcopy(phase0_assets)
+        existing_zone = assets["traffic_zones"]["zones"][0]
+        overlapping_zone = deepcopy(existing_zone)
+        overlapping_zone["id"] = f"overlap-{field}"
+        overlapping_zone["memberNodeIds"] = []
+        overlapping_zone["memberEdgeIds"] = []
+        overlapping_zone["entryEdgeIds"] = []
+        overlapping_zone["exitEdgeIds"] = []
+        overlapping_zone["recoveryNodeIds"] = []
+        overlapping_zone[field] = [existing_zone[field][0]]
+        assets["traffic_zones"]["zones"].append(overlapping_zone)
+
+        issues, _ = validate(assets)
+
+        assert "zones.edge.overlap" in error_codes(issues), field
+
+
+def test_traffic_zones_cannot_share_member_nodes(
+    phase0_assets: dict[str, dict[str, Any]],
+) -> None:
+    assets = deepcopy(phase0_assets)
+    existing_zone = assets["traffic_zones"]["zones"][0]
+    overlapping_zone = deepcopy(existing_zone)
+    overlapping_zone["id"] = "overlap-member-node"
+    overlapping_zone["memberNodeIds"] = [existing_zone["memberNodeIds"][0]]
+    overlapping_zone["memberEdgeIds"] = []
+    overlapping_zone["entryEdgeIds"] = []
+    overlapping_zone["exitEdgeIds"] = []
+    overlapping_zone["recoveryNodeIds"] = []
+    assets["traffic_zones"]["zones"].append(overlapping_zone)
+
+    issues, _ = validate(assets)
+
+    assert "zones.node.overlap" in error_codes(issues)
 
 
 def test_task_group_must_be_compatible_with_both_ap_nodes(

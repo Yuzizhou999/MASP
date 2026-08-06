@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .domain import DomainError, PlanSegment, SegmentKind, TransportTask, Vehicle
+from .zones import TrafficZoneIndex
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class MapTopology:
         model: dict[str, Any],
         conflicts: dict[str, Any],
         workstations: dict[str, Any],
+        traffic_zones: dict[str, Any] | None = None,
     ) -> None:
         self.nodes = {item["id"]: item for item in model["nodes"]}
         self.edges = {item["id"]: item for item in model["edges"]}
@@ -41,6 +43,7 @@ class MapTopology:
             )
             for item in workstations["workstations"]
         }
+        self.traffic_zones = TrafficZoneIndex(model, traffic_zones)
 
     def validate_vehicle(self, vehicle: Vehicle) -> None:
         node = self.nodes.get(vehicle.current_node_id or "")
@@ -104,10 +107,16 @@ class MapTopology:
                 resources.add(f"node:{segment.start_node_id}")
             if segment.end_node_id:
                 resources.add(f"node:{segment.end_node_id}")
+            resources.update(
+                self.traffic_zones.resource_ids_for_edge(segment.edge_id or "")
+            )
         # 等车不动，只占当前节点即可
         elif segment.kind is SegmentKind.WAIT:
             if segment.start_node_id:
                 resources.add(f"node:{segment.start_node_id}")
+                resources.update(
+                    self.traffic_zones.resource_ids_for_node(segment.start_node_id)
+                )
         # 装卸货时占着工位；如果这工位在路中间，就把路也封了
         elif segment.kind in {SegmentKind.PICKUP, SegmentKind.DROPOFF}:
             node_id = segment.start_node_id
@@ -120,11 +129,16 @@ class MapTopology:
             resources.add(f"workstation:{station.station_id}")
             if station.blocks_transit_during_service:
                 resources.add(f"node:{station.node_id}")
+            resources.update(
+                self.traffic_zones.resource_ids_for_node(station.node_id)
+            )
         return tuple(sorted(resources))
 
     def required_resources(self, segment: PlanSegment) -> tuple[str, ...]:
         return tuple(sorted(set(self.derived_resources(segment)) | set(segment.resource_ids)))
 
     def wait_allowed(self, node_id: str, robot_group: str) -> bool:
+        if self.traffic_zones.zone_for_node(node_id) is not None:
+            return False
         node = self.nodes[node_id]
         return bool(node["waitPolicyByGroup"][robot_group]["allowed"])

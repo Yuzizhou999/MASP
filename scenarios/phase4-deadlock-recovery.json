@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "phase4-deadlock-recovery",
+  "seed": 0,
+  "nowMs": 10000,
+  "endTimeMs": 50000,
+  "zoneAdmission": {
+    "zoneId": "zone-jack-pp363-pp365",
+    "vehicleId": "jack-zone-a",
+    "robotGroup": "jack",
+    "startNodeId": "jack:PP363",
+    "loadState": "empty",
+    "edgeIds": ["jack:edge-170", "jack:edge-721", "jack:edge-319"],
+    "blockingReservation": {
+      "id": "opposing-zone-occupancy",
+      "resourceId": "zone:zone-jack-pp363-pp365",
+      "vehicleId": "jack-zone-b",
+      "startMs": 0,
+      "endMs": 5000
+    }
+  },
+  "recoverableDeadlock": {
+    "id": "fork-current-edge-reverse",
+    "evidenceEdgeIds": ["fork:edge-323", "fork:edge-274"],
+    "reservations": [
+      {
+        "id": "vehicle-a-edge-hold",
+        "resourceId": "edge-conflict:2423",
+        "vehicleId": "vehicle-a",
+        "startMs": 0,
+        "endMs": 50000
+      },
+      {
+        "id": "vehicle-b-node-hold",
+        "resourceId": "node:shared:LM1254",
+        "vehicleId": "vehicle-b",
+        "startMs": 0,
+        "endMs": 50000
+      }
+    ],
+    "requirements": [
+      {
+        "vehicleId": "vehicle-a",
+        "resourceIds": ["node:shared:LM1254"],
+        "startMs": 10000,
+        "endMs": 11000,
+        "blockedSinceMs": 0,
+        "hasAlternative": false
+      },
+      {
+        "vehicleId": "vehicle-b",
+        "resourceIds": ["edge-conflict:2423"],
+        "startMs": 10000,
+        "endMs": 11000,
+        "blockedSinceMs": 0,
+        "hasAlternative": false
+      }
+    ],
+    "recoveryVehicles": [
+      {
+        "vehicleId": "vehicle-a",
+        "robotGroup": "fork",
+        "loadState": "empty",
+        "recoveryNodeId": "fork:PP1173",
+        "waitSinceMs": 0,
+        "priorityClass": 0,
+        "currentEdgeId": "fork:edge-323",
+        "edgeProgress": 0.99,
+        "heldResourceIds": ["edge-conflict:2423"]
+      },
+      {
+        "vehicleId": "vehicle-b",
+        "robotGroup": "fork",
+        "loadState": "empty",
+        "recoveryNodeId": "fork:PP1173",
+        "waitSinceMs": 0,
+        "priorityClass": 0,
+        "currentNodeId": "shared:LM1254",
+        "backtrackEdgeIds": [],
+        "heldResourceIds": ["node:shared:LM1254"]
+      }
+    ]
+  },
+  "unrecoverableDeadlock": {
+    "id": "fork-four-vehicle-ring",
+    "evidenceEdgeIds": [
+      "fork:edge-68",
+      "fork:edge-370",
+      "fork:edge-346",
+      "fork:edge-371"
+    ],
+    "reservations": [
+      {
+        "id": "ring-hold-0",
+        "resourceId": "node:fork:LM1028",
+        "vehicleId": "ring-0",
+        "startMs": 0,
+        "endMs": 50000
+      },
+      {
+        "id": "ring-hold-1",
+        "resourceId": "node:fork:LM1031",
+        "vehicleId": "ring-1",
+        "startMs": 0,
+        "endMs": 50000
+      },
+      {
+        "id": "ring-hold-2",
+        "resourceId": "node:fork:LM2472",
+        "vehicleId": "ring-2",
+        "startMs": 0,
+        "endMs": 50000
+      },
+      {
+        "id": "ring-hold-3",
+        "resourceId": "node:fork:LM2473",
+        "vehicleId": "ring-3",
+        "startMs": 0,
+        "endMs": 50000
+      }
+    ],
+    "requirements": [
+      {
+        "vehicleId": "ring-0",
+        "resourceIds": ["node:fork:LM1031"],
+        "startMs": 10000,
+        "endMs": 11000,
+        "blockedSinceMs": 0,
+        "hasAlternative": false
+      },
+      {
+        "vehicleId": "ring-1",
+        "resourceIds": ["node:fork:LM2472"],
+        "startMs": 10000,
+        "endMs": 11000,
+        "blockedSinceMs": 0,
+        "hasAlternative": false
+      },
+      {
+        "vehicleId": "ring-2",
+        "resourceIds": ["node:fork:LM2473"],
+        "startMs": 10000,
+        "endMs": 11000,
+        "blockedSinceMs": 0,
+        "hasAlternative": false
+      },
+      {
+        "vehicleId": "ring-3",
+        "resourceIds": ["node:fork:LM1028"],
+        "startMs": 10000,
+        "endMs": 11000,
+        "blockedSinceMs": 0,
+        "hasAlternative": false
+      }
+    ],
+    "recoveryVehicles": [
+      {
+        "vehicleId": "ring-0",
+        "robotGroup": "fork",
+        "loadState": "empty",
+        "recoveryNodeId": "fork:PP1175",
+        "waitSinceMs": 0,
+        "priorityClass": 0,
+        "currentNodeId": "fork:LM1028",
+        "backtrackEdgeIds": [
+          "fork:edge-67",
+          "fork:edge-270",
+          "fork:edge-19",
+          "fork:edge-40",
+          "fork:edge-367"
+        ],
+        "heldResourceIds": ["node:fork:LM1028"]
+      },
+      {
+        "vehicleId": "ring-1",
+        "robotGroup": "fork",
+        "loadState": "empty",
+        "recoveryNodeId": "fork:PP1175",
+        "waitSinceMs": 0,
+        "priorityClass": 0,
+        "currentNodeId": "fork:LM1031",
+        "backtrackEdgeIds": [
+          "fork:edge-68",
+          "fork:edge-67",
+          "fork:edge-270",
+          "fork:edge-19",
+          "fork:edge-40",
+          "fork:edge-367"
+        ],
+        "heldResourceIds": ["node:fork:LM1031"]
+      },
+      {
+        "vehicleId": "ring-2",
+        "robotGroup": "fork",
+        "loadState": "empty",
+        "recoveryNodeId": "fork:PP1175",
+        "waitSinceMs": 0,
+        "priorityClass": 0,
+        "currentNodeId": "fork:LM2472",
+        "backtrackEdgeIds": [
+          "fork:edge-370",
+          "fork:edge-68",
+          "fork:edge-67",
+          "fork:edge-270",
+          "fork:edge-19",
+          "fork:edge-40",
+          "fork:edge-367"
+        ],
+        "heldResourceIds": ["node:fork:LM2472"]
+      },
+      {
+        "vehicleId": "ring-3",
+        "robotGroup": "fork",
+        "loadState": "empty",
+        "recoveryNodeId": "fork:PP1175",
+        "waitSinceMs": 0,
+        "priorityClass": 0,
+        "currentNodeId": "fork:LM2473",
+        "backtrackEdgeIds": [
+          "fork:edge-372",
+          "fork:edge-67",
+          "fork:edge-270",
+          "fork:edge-19",
+          "fork:edge-40",
+          "fork:edge-367"
+        ],
+        "heldResourceIds": ["node:fork:LM2473"]
+      }
+    ]
+  }
+}

@@ -93,6 +93,7 @@ def main() -> None:
         workstations,
         scheduler,
         args.schemas,
+        traffic_zones=traffic_zones,
     )
     result = simulator.run()
     planning_summary = planning.summary()

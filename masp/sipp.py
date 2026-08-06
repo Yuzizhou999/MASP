@@ -14,9 +14,10 @@ from .domain import (
     VehiclePlan,
 )
 from .motion import EdgeTravelTimeModel
-from .reservations import ReservationTable
+from .reservations import RelativeReservationRequest, ReservationTable
 from .routing import RouteProvider, SpatialRoute
 from .topology import MapTopology
+from .zones import TrafficZone
 
 # SIPP 规划器的异常类，带有一个可选的建议延迟时间（毫秒）
 class SippPlanningError(DomainError):
@@ -177,6 +178,64 @@ class ContinuousTimeSippPlanner:
             ),
         )
 
+    def schedule_route_intent(
+        self,
+        vehicle: Vehicle,
+        route: SpatialRoute,
+        ready_ms: int,
+        load_state: LoadState,
+        reservations: ReservationTable,
+        horizon_end_ms: int,
+    ) -> tuple[PlanSegment, ...]:
+        """Schedule a fixed spatial route with the same safety rules as task planning."""
+        if vehicle.current_node_id is None:
+            raise SippPlanningError(
+                "sipp.vehicle.on_edge", "route intent requires a vehicle parked at a node"
+            )
+        if route.start_node_id != vehicle.current_node_id:
+            raise SippPlanningError(
+                "sipp.route_intent.start",
+                f"route starts at {route.start_node_id!r}, vehicle is at "
+                f"{vehicle.current_node_id!r}",
+            )
+        expected_node_id = route.start_node_id
+        for edge_id in route.edge_ids:
+            edge = self.topology.edges.get(edge_id)
+            if edge is None:
+                raise SippPlanningError(
+                    "sipp.route_intent.edge_missing",
+                    f"route references unknown edge {edge_id!r}",
+                )
+            if edge["robotGroup"] != vehicle.robot_group:
+                raise SippPlanningError(
+                    "sipp.route_intent.robot_group",
+                    f"edge {edge_id!r} belongs to robot group {edge['robotGroup']!r}, "
+                    f"vehicle belongs to {vehicle.robot_group!r}",
+                )
+            if edge["start"] != expected_node_id:
+                raise SippPlanningError(
+                    "sipp.route_intent.discontinuous",
+                    f"route is discontinuous at edge {edge_id!r}: expected start "
+                    f"{expected_node_id!r}, got {edge['start']!r}",
+                )
+            expected_node_id = edge["end"]
+        if expected_node_id != route.end_node_id:
+            raise SippPlanningError(
+                "sipp.route_intent.end",
+                f"route ends at {expected_node_id!r}, declared end is {route.end_node_id!r}",
+            )
+        segments: list[PlanSegment] = []
+        self._schedule_route(
+            segments,
+            vehicle,
+            route,
+            ready_ms,
+            load_state,
+            reservations,
+            horizon_end_ms,
+        )
+        return tuple(segments)
+
     # 生成恢复路线
     def _recovery_routes(
         self, robot_group: str, dropoff_node_id: str
@@ -295,59 +354,231 @@ class ContinuousTimeSippPlanner:
     ) -> int:
         current_node_id = route.start_node_id
         current_ms = ready_ms
-        for edge_id in route.edge_ids:
+        edge_ids = route.edge_ids
+        edge_index = 0
+        while edge_index < len(edge_ids):
+            edge_id = edge_ids[edge_index]
+            entry_zone = self.topology.traffic_zones.entry_zone_for_edge(edge_id)
+            if entry_zone is not None:
+                atomic_end = self._zone_atomic_end(
+                    edge_ids,
+                    edge_index,
+                    entry_zone,
+                    vehicle.robot_group,
+                )
+                atomic_edge_ids = edge_ids[edge_index : atomic_end + 1]
+                current_ms = self._schedule_atomic_edges(
+                    segments,
+                    vehicle,
+                    atomic_edge_ids,
+                    current_node_id,
+                    current_ms,
+                    load_state,
+                    reservations,
+                    horizon_end_ms,
+                )
+                current_node_id = self.topology.edges[atomic_edge_ids[-1]]["end"]
+                edge_index = atomic_end + 1
+                continue
+
+            controlled_zone = self.topology.traffic_zones.zone_for_edge(edge_id)
+            if controlled_zone is not None:
+                raise SippPlanningError(
+                    "sipp.zone.entry_missing",
+                    f"route reaches zone {controlled_zone.zone_id!r} through "
+                    f"non-entry edge {edge_id!r}",
+                )
+            current_ms = self._schedule_single_edge(
+                segments,
+                vehicle,
+                edge_id,
+                current_node_id,
+                current_ms,
+                load_state,
+                reservations,
+                horizon_end_ms,
+            )
+            current_node_id = self.topology.edges[edge_id]["end"]
+            edge_index += 1
+        return current_ms
+
+    def _zone_atomic_end(
+        self,
+        edge_ids: tuple[str, ...],
+        entry_index: int,
+        zone: TrafficZone,
+        robot_group: str,
+    ) -> int:
+        exited = False
+        for index in range(entry_index, len(edge_ids)):
+            edge_id = edge_ids[index]
             edge = self.topology.edges[edge_id]
+            if not exited:
+                if not self.topology.traffic_zones.edge_is_controlled_by(edge_id, zone):
+                    raise SippPlanningError(
+                        "sipp.zone.exit_missing",
+                        f"route leaves zone {zone.zone_id!r} without a configured exit edge",
+                    )
+                exited = edge_id in zone.exit_edge_ids
+            elif self.topology.traffic_zones.entry_zone_for_edge(edge_id) is not None:
+                raise SippPlanningError(
+                    "sipp.zone.safe_node_missing",
+                    f"route enters another zone before finding a safe node after {zone.zone_id!r}",
+                )
+
+            end_node_id = edge["end"]
+            if (
+                exited
+                and self.topology.wait_allowed(end_node_id, robot_group)
+                and self.topology.traffic_zones.zone_for_node(end_node_id) is None
+            ):
+                return index
+        code = "sipp.zone.safe_node_missing" if exited else "sipp.zone.exit_missing"
+        raise SippPlanningError(
+            code,
+            f"route through zone {zone.zone_id!r} has no reachable outside safe waiting node",
+        )
+
+    def _schedule_single_edge(
+        self,
+        segments: list[PlanSegment],
+        vehicle: Vehicle,
+        edge_id: str,
+        current_node_id: str,
+        current_ms: int,
+        load_state: LoadState,
+        reservations: ReservationTable,
+        horizon_end_ms: int,
+    ) -> int:
+        edge = self.topology.edges[edge_id]
+        duration_ms = self.travel_times.duration_ms(edge, load_state)
+        probe = PlanSegment(
+            segment_id="probe",
+            kind=SegmentKind.TRAVERSE,
+            start_ms=current_ms,
+            end_ms=current_ms + duration_ms,
+            start_node_id=edge["start"],
+            end_node_id=edge["end"],
+            edge_id=edge_id,
+            expected_load_state=load_state,
+        )
+        resources = self.topology.derived_resources(probe)
+        departure_ms = self._first_common_start(
+            resources,
+            current_ms,
+            duration_ms,
+            vehicle.vehicle_id,
+            reservations,
+        )
+        if departure_ms > current_ms:
+            self._append_wait(
+                segments,
+                vehicle.vehicle_id,
+                vehicle.robot_group,
+                current_node_id,
+                current_ms,
+                departure_ms,
+                load_state,
+                reservations,
+            )
+        arrival_ms = departure_ms + duration_ms
+        if arrival_ms > horizon_end_ms:
+            raise SippPlanningError(
+                "sipp.horizon.exceeded", "route exceeds planning horizon"
+            )
+        segments.append(
+            PlanSegment(
+                segment_id=f"segment-{len(segments):04d}",
+                kind=SegmentKind.TRAVERSE,
+                start_ms=departure_ms,
+                end_ms=arrival_ms,
+                start_node_id=edge["start"],
+                end_node_id=edge["end"],
+                edge_id=edge_id,
+                expected_load_state=load_state,
+                resource_ids=resources,
+            )
+        )
+        return arrival_ms
+
+    def _schedule_atomic_edges(
+        self,
+        segments: list[PlanSegment],
+        vehicle: Vehicle,
+        edge_ids: tuple[str, ...],
+        current_node_id: str,
+        ready_ms: int,
+        load_state: LoadState,
+        reservations: ReservationTable,
+        horizon_end_ms: int,
+    ) -> int:
+        offset_ms = 0
+        scheduled: list[tuple[dict[str, Any], int, int, tuple[str, ...]]] = []
+        requests: list[RelativeReservationRequest] = []
+        expected_node_id = current_node_id
+        for edge_id in edge_ids:
+            edge = self.topology.edges[edge_id]
+            if edge["start"] != expected_node_id:
+                raise SippPlanningError(
+                    "sipp.zone.route_discontinuous",
+                    f"atomic zone route is discontinuous at edge {edge_id!r}",
+                )
             duration_ms = self.travel_times.duration_ms(edge, load_state)
             probe = PlanSegment(
                 segment_id="probe",
                 kind=SegmentKind.TRAVERSE,
-                start_ms=current_ms,
-                end_ms=current_ms + duration_ms,
+                start_ms=offset_ms,
+                end_ms=offset_ms + duration_ms,
                 start_node_id=edge["start"],
                 end_node_id=edge["end"],
                 edge_id=edge_id,
                 expected_load_state=load_state,
             )
             resources = self.topology.derived_resources(probe)
-            departure_ms = self._first_common_start(
-                resources,
-                current_ms,
-                duration_ms,
+            scheduled.append((edge, offset_ms, offset_ms + duration_ms, resources))
+            requests.extend(
+                RelativeReservationRequest(resource_id, offset_ms, offset_ms + duration_ms)
+                for resource_id in resources
+            )
+            offset_ms += duration_ms
+            expected_node_id = edge["end"]
+
+        availability = reservations.first_available_bundle_start(
+            requests,
+            ready_ms,
+            vehicle_id=vehicle.vehicle_id,
+        )
+        if availability.start_ms > ready_ms:
+            self._append_wait(
+                segments,
                 vehicle.vehicle_id,
+                vehicle.robot_group,
+                current_node_id,
+                ready_ms,
+                availability.start_ms,
+                load_state,
                 reservations,
             )
-            if departure_ms > current_ms:
-                self._append_wait(
-                    segments,
-                    vehicle.vehicle_id,
-                    vehicle.robot_group,
-                    current_node_id,
-                    current_ms,
-                    departure_ms,
-                    load_state,
-                    reservations,
-                )
-            arrival_ms = departure_ms + duration_ms
-            if arrival_ms > horizon_end_ms:
-                raise SippPlanningError(
-                    "sipp.horizon.exceeded", "route exceeds planning horizon"
-                )
+        completion_ms = availability.start_ms + offset_ms
+        if completion_ms > horizon_end_ms:
+            raise SippPlanningError(
+                "sipp.horizon.exceeded", "atomic zone traversal exceeds planning horizon"
+            )
+        for edge, start_offset, end_offset, resources in scheduled:
             segments.append(
                 PlanSegment(
                     segment_id=f"segment-{len(segments):04d}",
                     kind=SegmentKind.TRAVERSE,
-                    start_ms=departure_ms,
-                    end_ms=arrival_ms,
+                    start_ms=availability.start_ms + start_offset,
+                    end_ms=availability.start_ms + end_offset,
                     start_node_id=edge["start"],
                     end_node_id=edge["end"],
-                    edge_id=edge_id,
+                    edge_id=edge["id"],
                     expected_load_state=load_state,
                     resource_ids=resources,
                 )
             )
-            current_ms = arrival_ms
-            current_node_id = edge["end"]
-        return current_ms
+        return completion_ms
 
     # 排服务，先找服务资源的空闲时刻。
     # 如果"到达时服务点还被占着"——不在 AP 上等，直接抛错并建议延迟

@@ -260,6 +260,15 @@ class RollingHorizonPlanner(Phase2Planner):
             raise ValueError(f"unknown phase 3 priority policy {self.policy!r}")
         self.seed = int(seed)
         self.previous_order: tuple[str, ...] = ()
+        self.priority_age_ms: dict[str, int] = {}
+
+    def set_priority_ages(self, ages_ms: dict[str, int]) -> None:
+        """Apply deadlock-supervisor starvation ages to later priority rounds."""
+
+        self.priority_age_ms = {
+            vehicle_id: max(0, int(age_ms))
+            for vehicle_id, age_ms in ages_ms.items()
+        }
 
     def plan(
         self,
@@ -572,6 +581,7 @@ class RollingHorizonPlanner(Phase2Planner):
             sorted(
                 proposals,
                 key=lambda item: (
+                    -self.priority_age_ms.get(item.vehicle_id, 0),
                     -tasks_by_id[item.task_id].priority_class,
                     tasks_by_id[item.task_id].release_time_ms,
                     item.task_id,
