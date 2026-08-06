@@ -59,6 +59,25 @@
     "dueTimePenaltyFactor": 2
   },
 
+  "coordination": {
+    // top_k：每轮生成多个车辆优先级顺序，逐个规划并按词典序目标选优。
+    // 也可直接填写 task_age、shortest_remaining、congestion、previous_order 或 random，
+    // 用于运行固定策略基线。
+    "defaultPolicy": "top_k",
+    // 每轮最多评估多少个互不相同的车辆全序。
+    "priorityCandidateCount": 5,
+    // Top-K 候选的生成顺序；重复的全序会自动去重，并用可复现随机扰动补足。
+    "priorityStrategies": [
+      "task_age",
+      "shortest_remaining",
+      "congestion",
+      "previous_order",
+      "random"
+    ],
+    // 随机 RH-PP 基线使用的种子。报告会用这些运行的均值与拥堵基线比较。
+    "benchmarkRandomSeeds": [0, 1, 2]
+  },
+
   "traffic": {
     "wait": {
       // LM 是普通路径点，AP 是取放货点，目前都不允许计划停车等待。

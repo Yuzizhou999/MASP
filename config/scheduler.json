@@ -32,6 +32,18 @@
     "priorityClassCreditMs": 5000,
     "dueTimePenaltyFactor": 2
   },
+  "coordination": {
+    "defaultPolicy": "top_k",
+    "priorityCandidateCount": 5,
+    "priorityStrategies": [
+      "task_age",
+      "shortest_remaining",
+      "congestion",
+      "previous_order",
+      "random"
+    ],
+    "benchmarkRandomSeeds": [0, 1, 2]
+  },
   "traffic": {
     "wait": {
       "allowOnLM": false,

@@ -36,6 +36,20 @@ python tools/run_phase2.py scenarios/phase2-continuous-tasks.json
 
 结果写入 `runs/phase2-continuous-tasks/`，其中 `planned-scenario.json` 可用于逐段检查车辆选择、路线、等待、取放货服务和放货后撤离。
 
+阶段 3 的滚动周期协调、Top-K 优先级和吞吐基准可运行：
+
+```powershell
+python tools/run_phase3.py scenarios/phase3-rh-pp-benchmark.json
+```
+
+结果写入 `runs/phase3-rh-pp-benchmark/`：
+
+- `planning-summary.json`：每轮候选顺序、可行数量、词典序评分、安全提交边界和规划耗时。
+- `benchmark.json`：拥堵策略与多个随机种子的吞吐、等待和安全对比。
+- `planned-scenario.json`：被选中并用于确定性回放的完整计划。
+
+调试单一策略时可添加 `--policy congestion` 或 `--policy random --seed 1`；只检查 Top-K 主场景而不运行完整基准时可添加 `--skip-benchmark`。
+
 ## 不要手工修改
 
 `generated/` 目录下的统一地图、冲突资源和工位文件由工具生成，不应手工添加注释或修改内容，否则下次构建会被覆盖。

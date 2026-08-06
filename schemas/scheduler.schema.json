@@ -11,6 +11,7 @@
     "serviceDefaults",
     "planner",
     "assignment",
+    "coordination",
     "traffic",
     "safety",
     "features"
@@ -92,6 +93,53 @@
         "taskAgeCreditPerSecondMs": {"type": "integer", "minimum": 0},
         "priorityClassCreditMs": {"type": "integer", "minimum": 0},
         "dueTimePenaltyFactor": {"type": "integer", "minimum": 0}
+      }
+    },
+    "coordination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defaultPolicy",
+        "priorityCandidateCount",
+        "priorityStrategies",
+        "benchmarkRandomSeeds"
+      ],
+      "properties": {
+        "defaultPolicy": {
+          "enum": [
+            "top_k",
+            "task_age",
+            "shortest_remaining",
+            "congestion",
+            "previous_order",
+            "random"
+          ]
+        },
+        "priorityCandidateCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "priorityStrategies": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "task_age",
+              "shortest_remaining",
+              "congestion",
+              "previous_order",
+              "random"
+            ]
+          }
+        },
+        "benchmarkRandomSeeds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 0}
+        }
       }
     },
     "traffic": {

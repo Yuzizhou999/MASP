@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masp.local/schemas/phase3-scenario.schema.json",
+  "title": "MASP phase 3 RH-PP benchmark scenario",
+  "description": "阶段 3 输入包含固定车队和按 releaseTimeMs 持续进入的任务，RH-PP 在每个规划周期生成优先级候选。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scenarioId", "seed", "endTimeMs", "vehicles", "tasks"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "scenarioId": {"type": "string", "minLength": 1},
+    "seed": {"type": "integer", "minimum": 0},
+    "endTimeMs": {"type": "integer", "minimum": 1},
+    "vehicles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["vehicleId", "robotGroup", "initialNodeId", "initialHeadingRad", "initialLoadState"],
+        "properties": {
+          "vehicleId": {"type": "string", "minLength": 1},
+          "robotGroup": {"enum": ["fork", "jack"]},
+          "initialNodeId": {"type": "string", "minLength": 1},
+          "initialHeadingRad": {"type": "number", "minimum": -6.283186, "maximum": 6.283186},
+          "initialLoadState": {"const": "empty"},
+          "capabilities": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "https://masp.local/schemas/task.schema.json"}
+    }
+  }
+}

@@ -30,3 +30,19 @@ python tools/run_phase2.py scenarios/phase2-continuous-tasks.json
 ```
 
 规划器会输出 `planned-scenario.json`，其中可以查看自动选择的车辆、道路、等待区间、取放货服务和放货后的 PP/CP 撤离路线。
+
+## 阶段 3 RH-PP 基准
+
+`phase3-rh-pp-benchmark.json` 使用三辆 fork 车辆和五个分时任务，第一轮会让三辆车同时参与优先级协调。运行：
+
+```powershell
+python tools/run_phase3.py scenarios/phase3-rh-pp-benchmark.json
+```
+
+默认策略是 `top_k`。程序会额外运行一次拥堵优先基线和三个固定随机种子基线，并在 `runs/phase3-rh-pp-benchmark/benchmark.json` 中检查：
+
+1. 拥堵策略吞吐不低于随机策略均值。
+2. 所有基线运行都没有资源预留冲突。
+3. Top-K 和固定策略的规划 p95 均小于配置的规划周期。
+
+`safeUntilMs` 可能晚于名义执行窗口，因为车辆不能停在 LM/AP；提交边界必须继续延伸到下一个允许等待的 PP/CP。
