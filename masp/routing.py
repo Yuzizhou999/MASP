@@ -26,6 +26,35 @@ class RouteProvider:
             (item["robotGroup"], item["start"], item["end"]): item
             for item in model["edges"]
         }
+        self._graphs: dict[tuple[str, LoadState, frozenset[str]], nx.DiGraph] = {}
+        self._route_cache: dict[
+            tuple[str, str, str, LoadState, int, frozenset[str]],
+            tuple[SpatialRoute, ...],
+        ] = {}
+
+    def _graph(
+        self,
+        robot_group: str,
+        load_state: LoadState,
+        closed_edge_ids: frozenset[str],
+    ) -> nx.DiGraph:
+        key = (robot_group, load_state, closed_edge_ids)
+        cached = self._graphs.get(key)
+        if cached is not None:
+            return cached
+
+        graph = nx.DiGraph()
+        for edge in sorted(self.edges.values(), key=lambda item: item["id"]):
+            if edge["robotGroup"] != robot_group or edge["id"] in closed_edge_ids:
+                continue
+            graph.add_edge(
+                edge["start"],
+                edge["end"],
+                edge_id=edge["id"],
+                weight=self.travel_times.duration_ms(edge, load_state),
+            )
+        self._graphs[key] = graph
+        return graph
 
     # 生成候选路线
     def candidate_routes(
@@ -40,27 +69,39 @@ class RouteProvider:
         # 要 0 条就不给；起点=终点就返回一条"空路线"
         if limit <= 0:
             return ()
+        closed_edge_ids = frozenset(closed_edge_ids)
+        cache_key = (
+            robot_group,
+            start_node_id,
+            end_node_id,
+            load_state,
+            limit,
+            closed_edge_ids,
+        )
+        cached = self._route_cache.get(cache_key)
+        if cached is not None:
+            return cached
         if start_node_id == end_node_id:
-            return (SpatialRoute(start_node_id, end_node_id, (), 0),)
-        # 生成有向图，边权重 = 这条边的总耗时
-        graph = nx.DiGraph()
-        for edge in sorted(self.edges.values(), key=lambda item: item["id"]):
-            if edge["robotGroup"] != robot_group or edge["id"] in closed_edge_ids:
-                continue
-            graph.add_edge(
-                edge["start"],
-                edge["end"],
-                edge_id=edge["id"],
-                weight=self.travel_times.duration_ms(edge, load_state),
-            )
+            routes = (SpatialRoute(start_node_id, end_node_id, (), 0),)
+            self._route_cache[cache_key] = routes
+            return routes
+
+        graph = self._graph(robot_group, load_state, closed_edge_ids)
         try:
-            # 用 Yen 算法求前 K 条最短路线
-            node_paths = islice(
-                nx.shortest_simple_paths(
+            if limit == 1:
+                # Assignment feasibility only needs one route. Dijkstra avoids
+                # the expensive Yen generator when no path exists.
+                node_paths = (nx.shortest_path(
                     graph, start_node_id, end_node_id, weight="weight"
-                ),
-                limit,
-            )
+                ),)
+            else:
+                # 用 Yen 算法求前 K 条最短路线
+                node_paths = islice(
+                    nx.shortest_simple_paths(
+                        graph, start_node_id, end_node_id, weight="weight"
+                    ),
+                    limit,
+                )
             routes: list[SpatialRoute] = []
             for nodes in node_paths:
                 edge_ids = tuple(
@@ -78,8 +119,11 @@ class RouteProvider:
                         ),
                     )
                 )
-            return tuple(routes)
+            result = tuple(routes)
+            self._route_cache[cache_key] = result
+            return result
         except (nx.NetworkXNoPath, nx.NodeNotFound):
+            self._route_cache[cache_key] = ()
             return ()
 
     # 只取最快一条的耗时

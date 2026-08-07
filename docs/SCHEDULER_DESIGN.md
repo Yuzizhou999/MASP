@@ -1566,6 +1566,36 @@ pytest -q
 
 退出条件：RL 在独立场景中稳定提升吞吐，推理失败回退可靠。
 
+当前实施状态（2026-08-07）：已完成阶段 5 MVP，但尚未达到吞吐退出条件。
+
+- `masp/rl_priority.py` 已实现可变车辆数量的观察编码。基础特征包含车型、
+  载荷/车辆状态、任务年龄、业务优先级、due slack、空载/载货时间、车辆
+  优先级年龄和资源拥堵；路径 token 包含阶段、边长度/时间、冲突资源摘要、
+  相对方向/位移和窄路标志，不使用绝对节点 ID embedding。
+- `PriorityOrderNetwork` 先对每辆车的未来路径做 temporal attention，再对候选
+  车辆做 spatial attention，最后用自回归 pointer decoder 生成无重复排列。
+- `PriorityOrderEnv` 和 `PPOPriorityTrainer` 提供 Gymnasium 兼容的单决策上下文
+  环境、真实 SIPP 候选奖励、PPO 更新以及带版本/config/metadata 的 checkpoint。
+- `RollingHorizonPlanner` 的 `rl` 策略只接收优先级排列。排列仍由既有
+  `_evaluate_candidate` 调用 SIPP、`ReservationTable` 和 `PlanValidator`；
+  checkpoint/推理/超时/排列错误会回退到 congestion，合法但不可行的 RL
+  候选也会追加一次 congestion 安全基线评估。默认不允许 RL 替换可行的
+  congestion guardian，只有显式传入 `--rl-allow-deviation` 才进入实验模式。
+- `tools/train_phase5.py --state-source rolling` 会先运行 congestion 基线，
+  从真实滚动周期截取训练状态；`--behavior-clone-epochs` 用 congestion
+  排列预热 pointer decoder，再进入 PPO。交互与压力场景混合采集得到 97 个
+  状态，避免把静态快照中的不可用车辆组合当成训练样本。
+- 滚动状态训练后的交互场景仍为 6/6、43.2 dropoffs/hour、冲突 0，RL 推理
+  回退 0；压力场景仍为 32/32、96.0 dropoffs/hour、冲突 0。混合 checkpoint
+  在显式 `--rl-allow-deviation` 的实验模式下，规划 p95 为 2046.560 ms，
+  追加 43 个 congestion guardian，4 次阻止吞吐不增加的 RL 替换，RL 推理
+  总耗时约 1124 ms。未开启该开关时，压力场景复现 congestion 基线，p95
+  为 1150.680 ms，RL 推理次数为 0，event digest 保持一致。
+  吞吐没有提升，因此阶段 5 退出条件仍未满足。
+- 后续需要将动作定义改为“可规划前缀/局部冲突分量”的排序问题，或增加真实
+  任务到达、车辆遥测和多步 credit assignment；单纯扩大 PPO steps 不能解决
+  完整排列经常不存在的问题。
+
 ### 阶段 6：实时集成与硬化
 
 交付物：

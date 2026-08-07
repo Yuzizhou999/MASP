@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from masp.scenario import (
     validate_phase3_scenario_document,
 )
 from masp.topology import MapTopology
+from masp.sipp import SippPlanningError
 
 from conftest import read_json
 
@@ -71,6 +73,53 @@ def test_random_priority_orders_are_reproducible(phase3_documents) -> None:
     assert planner._random_order(proposals, 0, 0, 0) == planner._random_order(
         proposals, 0, 0, 0
     )
+
+
+def test_idle_cycles_jump_to_the_next_release_time(phase3_documents) -> None:
+    scenario = deepcopy(read_json("scenarios/phase3-rh-pp-benchmark.json"))
+    scenario["tasks"] = scenario["tasks"][:1]
+    scenario["tasks"][0]["releaseTimeMs"] = 1234
+    scenario["endTimeMs"] = 500000
+
+    planning, _ = build_phase3_plans(
+        scenario, *phase3_documents, ROOT / "schemas", policy="congestion", seed=0
+    )
+
+    assert planning.unplanned_task_ids == ()
+    assert planning.cycles[0].decision_time_ms == 0
+    assert planning.cycles[1].decision_time_ms == 1234
+
+
+def test_failed_pairs_do_not_spin_without_a_future_state_change(
+    phase3_documents, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model, conflicts, workstations, profiles, scheduler, zones = phase3_documents
+    scenario = read_json("scenarios/phase3-rh-pp-benchmark.json")
+    topology = MapTopology(model, conflicts, workstations, zones)
+    planner = RollingHorizonPlanner(
+        topology, model, profiles, scheduler, zones, policy="congestion", seed=0
+    )
+    vehicles = [Vehicle.from_dict(item) for item in scenario["vehicles"]]
+    defaults = scheduler["serviceDefaults"]
+    task = TransportTask.from_dict(
+        scenario["tasks"][0],
+        int(defaults["pickupServiceMs"]),
+        int(defaults["dropoffServiceMs"]),
+    )
+    attempts = 0
+
+    def fail_plan(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise SippPlanningError("sipp.no_schedule", "forced failure")
+
+    monkeypatch.setattr(planner.sipp, "plan_task", fail_plan)
+
+    planning = planner.plan(vehicles, [task], 500000)
+
+    assert planning.unplanned_task_ids == (task.task_id,)
+    assert len(planning.cycles) == 1
+    assert attempts == len(vehicles)
 
 
 def test_top_k_rh_pp_is_safe_and_completes_stream(
@@ -151,3 +200,55 @@ def test_phase3_schema_is_valid_and_example_matches() -> None:
     validate_phase3_scenario_document(
         read_json("scenarios/phase3-rh-pp-benchmark.json"), ROOT / "schemas"
     )
+
+
+@pytest.mark.parametrize(
+    ("scenario_path", "vehicle_count", "task_count"),
+    (
+        ("scenarios/phase3-realistic-multi-fleet.json", 14, 32),
+        ("scenarios/phase3-realistic-multi-fleet-interactive.json", 4, 6),
+    ),
+)
+def test_realistic_multi_fleet_scenarios_are_valid(
+    phase3_documents,
+    scenario_path: str,
+    vehicle_count: int,
+    task_count: int,
+) -> None:
+    model, conflicts, workstations, _, scheduler, zones = phase3_documents
+    scenario = read_json(scenario_path)
+    validate_phase3_scenario_document(scenario, ROOT / "schemas")
+    assert len(scenario["vehicles"]) == vehicle_count
+    assert len(scenario["tasks"]) == task_count
+
+    topology = MapTopology(model, conflicts, workstations, zones)
+    for item in scenario["vehicles"]:
+        topology.validate_vehicle(Vehicle.from_dict(item))
+    defaults = scheduler["serviceDefaults"]
+    for item in scenario["tasks"]:
+        topology.validate_task(
+            TransportTask.from_dict(
+                item,
+                int(defaults["pickupServiceMs"]),
+                int(defaults["dropoffServiceMs"]),
+            )
+        )
+
+
+def test_realistic_pressure_tasks_are_individually_schedulable(
+    phase3_documents,
+) -> None:
+    scenario = read_json("scenarios/phase3-realistic-multi-fleet.json")
+
+    for task in scenario["tasks"]:
+        single_task = deepcopy(scenario)
+        single_task["scenarioId"] = f"single-{task['taskId']}"
+        single_task["tasks"] = [task]
+        planning, _ = build_phase3_plans(
+            single_task,
+            *phase3_documents,
+            ROOT / "schemas",
+            policy="congestion",
+            seed=0,
+        )
+        assert planning.unplanned_task_ids == (), task["taskId"]

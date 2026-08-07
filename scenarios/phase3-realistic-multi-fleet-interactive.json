@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "phase3-realistic-multi-fleet-interactive",
+  "seed": 0,
+  "endTimeMs": 500000,
+  "vehicles": [
+    {
+      "vehicleId": "fork-001",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1171",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "fork-002",
+      "robotGroup": "fork",
+      "initialNodeId": "fork:PP1172",
+      "initialHeadingRad": 0.0,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-003",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP367",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    },
+    {
+      "vehicleId": "jack-004",
+      "robotGroup": "jack",
+      "initialNodeId": "jack:PP399",
+      "initialHeadingRad": -1.570796,
+      "initialLoadState": "empty"
+    }
+  ],
+  "tasks": [
+    {
+      "taskId": "interactive-fork-001",
+      "releaseTimeMs": 0,
+      "pickupNodeId": "fork:AP1123",
+      "dropoffNodeId": "fork:AP2121",
+      "requiredRobotGroup": "fork",
+      "payloadType": "pallet",
+      "payloadId": "interactive-pallet-001",
+      "pickupServiceMs": 6000,
+      "dropoffServiceMs": 7000,
+      "priorityClass": 1,
+      "dueTimeMs": 240000
+    },
+    {
+      "taskId": "interactive-fork-002",
+      "releaseTimeMs": 90000,
+      "pickupNodeId": "fork:AP1119",
+      "dropoffNodeId": "fork:AP1126",
+      "requiredRobotGroup": "fork",
+      "payloadType": "pallet",
+      "payloadId": "interactive-pallet-002",
+      "pickupServiceMs": 5000,
+      "dropoffServiceMs": 6000,
+      "priorityClass": 0,
+      "dueTimeMs": 240000
+    },
+    {
+      "taskId": "interactive-jack-001",
+      "releaseTimeMs": 0,
+      "pickupNodeId": "jack:AP357",
+      "dropoffNodeId": "jack:AP96",
+      "requiredRobotGroup": "jack",
+      "payloadType": "shelf",
+      "payloadId": "interactive-shelf-001",
+      "pickupServiceMs": 5000,
+      "dropoffServiceMs": 5000,
+      "priorityClass": 1,
+      "dueTimeMs": 180000
+    },
+    {
+      "taskId": "interactive-jack-002",
+      "releaseTimeMs": 90000,
+      "pickupNodeId": "jack:AP96",
+      "dropoffNodeId": "jack:AP357",
+      "requiredRobotGroup": "jack",
+      "payloadType": "shelf",
+      "payloadId": "interactive-shelf-002",
+      "pickupServiceMs": 5000,
+      "dropoffServiceMs": 5000,
+      "priorityClass": 1,
+      "dueTimeMs": 180000
+    },
+    {
+      "taskId": "interactive-fork-003",
+      "releaseTimeMs": 180000,
+      "pickupNodeId": "fork:AP1113",
+      "dropoffNodeId": "fork:AP1116",
+      "requiredRobotGroup": "fork",
+      "payloadType": "pallet",
+      "payloadId": "interactive-pallet-003",
+      "pickupServiceMs": 5000,
+      "dropoffServiceMs": 5000,
+      "priorityClass": 2,
+      "dueTimeMs": 330000
+    },
+    {
+      "taskId": "interactive-jack-003",
+      "releaseTimeMs": 180000,
+      "pickupNodeId": "jack:AP3460",
+      "dropoffNodeId": "jack:AP100",
+      "requiredRobotGroup": "jack",
+      "payloadType": "shelf",
+      "payloadId": "interactive-shelf-003",
+      "pickupServiceMs": 5000,
+      "dropoffServiceMs": 5000,
+      "priorityClass": 2,
+      "dueTimeMs": 300000
+    }
+  ]
+}

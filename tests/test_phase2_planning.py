@@ -4,6 +4,8 @@ from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
+
 from masp.assignment import TaskAllocator
 from masp.domain import (
     LoadState,
@@ -14,8 +16,10 @@ from masp.domain import (
 )
 from masp.motion import EdgeTravelTimeModel
 from masp.plans import PlanValidator
+from masp.reservations import Reservation, ReservationTable
 from masp.routing import RouteProvider
 from masp.scenario import build_phase2_plans, build_simulator
+from masp.sipp import ContinuousTimeSippPlanner, SippPlanningError
 from masp.topology import MapTopology
 
 from conftest import read_json
@@ -48,6 +52,24 @@ def test_motion_time_is_positive_rounded_and_load_sensitive() -> None:
     assert loaded_ms % quantum == 0
     assert loaded_ms >= empty_ms
 
+    cache_size = len(travel._duration_cache)
+    assert travel.duration_ms(edge, LoadState.EMPTY) == empty_ms
+    assert len(travel._duration_cache) == cache_size
+
+    reverse_probe = {
+        **edge,
+        "start": edge["end"],
+        "end": edge["start"],
+        "p0": edge["p3"],
+        "p1": edge["p2"],
+        "p2": edge["p1"],
+        "p3": edge["p0"],
+        "length": float(edge["length"]) / 2.0,
+        "motionDirection": 1 - int(edge.get("motionDirection", 0)),
+    }
+    travel.duration_ms(reverse_probe, LoadState.EMPTY)
+    assert len(travel._duration_cache) == cache_size + 1
+
 
 def test_candidate_routes_follow_the_vehicle_directed_subgraph() -> None:
     model, _, _, profiles, scheduler, _ = phase2_documents()
@@ -72,6 +94,172 @@ def test_candidate_routes_follow_the_vehicle_directed_subgraph() -> None:
             assert edge["start"] == current
             current = edge["end"]
         assert current == route.end_node_id
+
+
+def test_candidate_routes_reuse_static_graph_and_route_cache() -> None:
+    model, _, _, profiles, scheduler, _ = phase2_documents()
+    travel = EdgeTravelTimeModel(model, profiles, scheduler["planner"]["timeQuantumMs"])
+    routes = RouteProvider(model, travel)
+
+    first = routes.candidate_routes(
+        "fork",
+        "fork:PP1171",
+        "fork:AP1123",
+        LoadState.EMPTY,
+        limit=3,
+    )
+    graph_count = len(routes._graphs)
+    route_count = len(routes._route_cache)
+    second = routes.candidate_routes(
+        "fork",
+        "fork:PP1171",
+        "fork:AP1123",
+        LoadState.EMPTY,
+        limit=3,
+    )
+
+    assert second is first
+    assert len(routes._graphs) == graph_count
+    assert len(routes._route_cache) == route_count
+
+    routes.candidate_routes(
+        "fork",
+        "fork:PP1171",
+        "fork:AP1123",
+        LoadState.EMPTY,
+        limit=3,
+        closed_edge_ids=frozenset({first[0].edge_ids[0]}),
+    )
+    assert len(routes._graphs) == graph_count + 1
+    assert len(routes._route_cache) == route_count + 1
+
+
+def test_occupied_wait_node_jumps_to_blocker_end() -> None:
+    model, conflicts, workstations, profiles, scheduler, traffic_zones = (
+        phase2_documents()
+    )
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        RouteProvider(model, travel),
+        travel,
+        scheduler,
+        (item["nodeId"] for item in traffic_zones["recoveryNodes"]),
+    )
+    reservations = ReservationTable()
+    reservations.insert_batch(
+        [
+            Reservation(
+                reservation_id="block-wait-node",
+                resource_id="node:fork:PP1171",
+                vehicle_id="other-vehicle",
+                plan_id="other-plan",
+                segment_id="hold",
+                start_ms=1000,
+                end_ms=5000,
+                kind="wait",
+                committed=True,
+            )
+        ]
+    )
+
+    with pytest.raises(SippPlanningError) as error:
+        planner._append_wait(
+            [],
+            "fork-001",
+            "fork",
+            "fork:PP1171",
+            0,
+            2000,
+            LoadState.EMPTY,
+            reservations,
+        )
+
+    assert error.value.code == "sipp.wait.interval_occupied"
+    assert error.value.suggested_delay_ms == 5000
+
+    with pytest.raises(SippPlanningError) as error:
+        planner._append_wait(
+            [],
+            "fork-001",
+            "fork",
+            "fork:PP1171",
+            0,
+            planner.max_wait_ms + 1000,
+            LoadState.EMPTY,
+            ReservationTable(),
+        )
+
+    assert error.value.code == "sipp.wait.too_long"
+    assert error.value.suggested_delay_ms == 1000
+
+
+def test_non_temporal_sipp_failures_are_not_retried_with_later_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model, conflicts, workstations, profiles, scheduler, traffic_zones = (
+        phase2_documents()
+    )
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    routes = RouteProvider(model, travel)
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        routes,
+        travel,
+        scheduler,
+        (item["nodeId"] for item in traffic_zones["recoveryNodes"]),
+    )
+    vehicle = Vehicle.from_dict(
+        {
+            "vehicleId": "fork-001",
+            "robotGroup": "fork",
+            "initialNodeId": "fork:PP1171",
+            "initialHeadingRad": 0.0,
+            "initialLoadState": "empty",
+        }
+    )
+    task = TransportTask(
+        task_id="fork-task",
+        release_time_ms=0,
+        pickup_node_id="fork:AP1123",
+        dropoff_node_id="fork:AP2121",
+        required_robot_group="fork",
+        payload_type="pallet",
+        payload_id=None,
+        pickup_service_ms=5000,
+        dropoff_service_ms=5000,
+    )
+    empty_routes = routes.candidate_routes(
+        "fork", vehicle.current_node_id or "", task.pickup_node_id, LoadState.EMPTY, 3
+    )
+    loaded_routes = routes.candidate_routes(
+        "fork", task.pickup_node_id, task.dropoff_node_id, LoadState.LOADED, 3
+    )
+    recovery_routes = planner._recovery_routes("fork", task.dropoff_node_id)
+    expected_combinations = len(empty_routes) * len(loaded_routes) * len(recovery_routes)
+    attempts = 0
+
+    def fail_permanently(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise SippPlanningError(
+            "sipp.horizon.exceeded", "route exceeds planning horizon"
+        )
+
+    monkeypatch.setattr(planner, "_schedule_combination", fail_permanently)
+
+    with pytest.raises(SippPlanningError) as error:
+        planner.plan_task(vehicle, task, 0, 400000, ReservationTable(), 0)
+
+    assert error.value.code == "sipp.no_schedule"
+    assert attempts == expected_combinations
+    assert attempts < expected_combinations * planner.max_schedule_attempts
 
 
 def test_assignment_filters_robot_group_and_chooses_minimum_cost_vehicle() -> None:

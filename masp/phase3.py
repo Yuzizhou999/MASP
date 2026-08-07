@@ -29,6 +29,7 @@ class PriorityStrategy(str, Enum):
     CONGESTION = "congestion"
     PREVIOUS_ORDER = "previous_order"
     RANDOM = "random"
+    RL = "rl"
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,13 @@ class Phase3PlanningResult:
     planning_horizon_ms: int
     execution_horizon_ms: int
     planning_timeout_ms: int
+    rl_inference_count: int = 0
+    rl_fallback_count: int = 0
+    rl_inference_ms: float = 0.0
+    rl_safety_fallback_count: int = 0
+    rl_guardian_candidate_count: int = 0
+    rl_guardian_override_count: int = 0
+    rl_allow_deviation: bool = False
 
     @staticmethod
     def _percentile(values: Iterable[float], percentile: float) -> float:
@@ -191,6 +199,13 @@ class Phase3PlanningResult:
             ),
             "scheduleAttempts": sum(item.schedule_attempts for item in self.records),
             "reservationConflictRejections": self.reservation_conflict_rejections,
+            "rlInferenceCount": self.rl_inference_count,
+            "rlFallbackCount": self.rl_fallback_count,
+            "rlInferenceMs": round(self.rl_inference_ms, 3),
+            "rlSafetyFallbackCount": self.rl_safety_fallback_count,
+            "rlGuardianCandidateCount": self.rl_guardian_candidate_count,
+            "rlGuardianOverrideCount": self.rl_guardian_override_count,
+            "rlAllowDeviation": self.rl_allow_deviation,
             "assignments": [
                 {
                     "decisionTimeMs": item.decision_time_ms,
@@ -242,6 +257,10 @@ class RollingHorizonPlanner(Phase2Planner):
         *,
         policy: str | None = None,
         seed: int = 0,
+        priority_policy: Any | None = None,
+        rl_checkpoint: str | None = None,
+        rl_candidate_count: int | None = None,
+        rl_allow_deviation: bool = False,
     ) -> None:
         super().__init__(topology, model, profiles, scheduler, traffic_zones)
         planner = scheduler["planner"]
@@ -261,6 +280,37 @@ class RollingHorizonPlanner(Phase2Planner):
         self.seed = int(seed)
         self.previous_order: tuple[str, ...] = ()
         self.priority_age_ms: dict[str, int] = {}
+        self.rl_policy = priority_policy
+        self.rl_inference_timeout_ms = int(
+            coordination.get("rlInferenceTimeoutMs", self.planning_timeout_ms)
+        )
+        self.rl_inference_count = 0
+        self.rl_fallback_count = 0
+        self.rl_inference_ms = 0.0
+        self.rl_safety_fallback_count = 0
+        self.rl_guardian_candidate_count = 0
+        self.rl_guardian_override_count = 0
+        self.rl_allow_deviation = bool(rl_allow_deviation)
+        if (
+            self.policy == PriorityStrategy.RL.value
+            and self.rl_allow_deviation
+            and self.rl_policy is None
+            and rl_checkpoint
+        ):
+            try:
+                from .rl_priority import RLPriorityPolicy
+
+                self.rl_policy = RLPriorityPolicy.from_checkpoint(
+                    rl_checkpoint,
+                    topology=self.topology,
+                    routes=self.routes,
+                    planning_horizon_ms=self.planning_horizon_ms,
+                    candidate_count=rl_candidate_count,
+                    seed=self.seed,
+                )
+            except (OSError, RuntimeError, ValueError, KeyError, ImportError):
+                # Checkpoint problems are handled by the deterministic fallback.
+                self.rl_policy = None
 
     def set_priority_ages(self, ages_ms: dict[str, int]) -> None:
         """Apply deadlock-supervisor starvation ages to later priority rounds."""
@@ -294,6 +344,7 @@ class RollingHorizonPlanner(Phase2Planner):
         cycles: list[RollingCycleRecord] = []
         planned_tasks: set[str] = set()
         plan_counts: Counter[str] = Counter()
+        pair_retry_until: dict[tuple[str, str], int] = {}
         now_ms = 0
         cycle_index = 0
 
@@ -327,8 +378,16 @@ class RollingHorizonPlanner(Phase2Planner):
                     for vehicle in projections.values()
                     if vehicle.available_at_ms <= now_ms
                 ]
+                cooled_down_pairs = {
+                    pair
+                    for pair, retry_at_ms in pair_retry_until.items()
+                    if retry_at_ms > now_ms
+                }
                 proposals = self.allocator.assign(
-                    available, pending, now_ms, frozenset(excluded_pairs)
+                    available,
+                    pending,
+                    now_ms,
+                    frozenset(excluded_pairs | cooled_down_pairs),
                 )
                 if not proposals:
                     break
@@ -357,6 +416,50 @@ class RollingHorizonPlanner(Phase2Planner):
                 ]
                 candidate_records.extend(item.record for item in outcomes)
                 feasible = [item for item in outcomes if item.record.feasible]
+                if (
+                    not feasible
+                    and self.policy == PriorityStrategy.RL.value
+                    and self.rl_policy is not None
+                    and any(item.record.strategy == PriorityStrategy.RL.value for item in outcomes)
+                ):
+                    # A legal learned permutation can still be locally infeasible.
+                    # Give the deterministic safety baseline one chance before
+                    # excluding a vehicle-task pair for the next round.
+                    fallback_order = self._order_for_strategy(
+                        PriorityStrategy.CONGESTION,
+                        proposals,
+                        tasks_by_id,
+                        reservations,
+                        projections,
+                        now_ms,
+                        cycle_index,
+                        round_index,
+                        0,
+                    )
+                    fallback_signature = tuple(
+                        (item.vehicle_id, item.task_id) for item in fallback_order
+                    )
+                    if not any(
+                        item.record.order == fallback_signature for item in outcomes
+                    ):
+                        fallback = self._evaluate_candidate(
+                            candidate_id=(
+                                f"cycle-{cycle_index:04d}-round-{round_index:02d}"
+                                "-candidate-rl-fallback"
+                            ),
+                            strategy="congestion_fallback",
+                            order=fallback_order,
+                            now_ms=now_ms,
+                            end_time_ms=end_time_ms,
+                            tasks_by_id=tasks_by_id,
+                            base_projections=projections,
+                            base_reservations=reservations,
+                            plan_counts=plan_counts,
+                        )
+                        outcomes.append(fallback)
+                        candidate_records.append(fallback.record)
+                        self.rl_safety_fallback_count += 1
+                        feasible = [item for item in outcomes if item.record.feasible]
                 if not feasible:
                     failed = [
                         item.record
@@ -373,9 +476,51 @@ class RollingHorizonPlanner(Phase2Planner):
                             item.candidate_id,
                         ),
                     )
-                    excluded_pairs.add(failure.failure_pair or ("", ""))
+                    failure_pair = failure.failure_pair or ("", "")
+                    excluded_pairs.add(failure_pair)
+                    pair_retry_until[failure_pair] = (
+                        now_ms + self.planning_horizon_ms
+                    )
                     round_index += 1
                     continue
+
+                if self.policy == PriorityStrategy.RL.value:
+                    guardians = [
+                        item
+                        for item in feasible
+                        if item.record.strategy == "congestion_guardian"
+                    ]
+                    if guardians:
+                        guardian = min(
+                            guardians,
+                            key=lambda item: item.record.score.ordering_key()
+                            if item.record.score is not None
+                            else (math.inf,),
+                        )
+                        guardian_score = guardian.record.score
+                        if guardian_score is not None:
+                            guardian_throughput = (
+                                guardian_score.projected_dropoffs,
+                                guardian_score.projected_pickups,
+                            )
+                            guarded = [
+                                item
+                                for item in feasible
+                                if item is guardian
+                                or (
+                                    item.record.score is not None
+                                    and (
+                                        item.record.score.projected_dropoffs,
+                                        item.record.score.projected_pickups,
+                                    )
+                                    > guardian_throughput
+                                )
+                            ]
+                            if not self.rl_allow_deviation:
+                                guarded = [guardian]
+                            if len(guarded) < len(feasible):
+                                self.rl_guardian_override_count += 1
+                                feasible = guarded
 
                 selected = min(
                     feasible,
@@ -395,6 +540,7 @@ class RollingHorizonPlanner(Phase2Planner):
                 for plan in selected.plans:
                     planned_tasks.add(plan.task_id)
                     plan_counts[plan.vehicle_id] += 1
+                    pair_retry_until.pop((plan.vehicle_id, plan.task_id), None)
                     commitments.append(self._safe_commitment(plan, projections[plan.vehicle_id]))
                 self.previous_order = tuple(
                     vehicle_id for vehicle_id, _ in selected.record.order
@@ -414,7 +560,28 @@ class RollingHorizonPlanner(Phase2Planner):
                     planning_duration_ms=duration_ms,
                 )
             )
-            now_ms += self.planning_period_ms
+            if selected_ids:
+                now_ms += self.planning_period_ms
+                cycle_index += 1
+                continue
+
+            # When no candidate was selected, a fixed-period retry cannot change
+            # the state. A moving vehicle's reservations are covered by its next
+            # availability time; idle-tail reservations do not change before the
+            # scenario ends. Jump only to a release or vehicle availability event.
+            next_times = [
+                task.release_time_ms
+                for task in tasks
+                if task.task_id not in planned_tasks
+                and now_ms < task.release_time_ms < end_time_ms
+            ] + [
+                vehicle.available_at_ms
+                for vehicle in projections.values()
+                if now_ms < vehicle.available_at_ms < end_time_ms
+            ]
+            if not next_times:
+                break
+            now_ms = min(next_times)
             cycle_index += 1
 
         return Phase3PlanningResult(
@@ -430,6 +597,13 @@ class RollingHorizonPlanner(Phase2Planner):
             planning_horizon_ms=self.planning_horizon_ms,
             execution_horizon_ms=self.execution_horizon_ms,
             planning_timeout_ms=self.planning_timeout_ms,
+            rl_inference_count=self.rl_inference_count,
+            rl_fallback_count=self.rl_fallback_count,
+            rl_inference_ms=self.rl_inference_ms,
+            rl_safety_fallback_count=self.rl_safety_fallback_count,
+            rl_guardian_candidate_count=self.rl_guardian_candidate_count,
+            rl_guardian_override_count=self.rl_guardian_override_count,
+            rl_allow_deviation=self.rl_allow_deviation,
         )
 
     def _validate_inputs(
@@ -473,15 +647,118 @@ class RollingHorizonPlanner(Phase2Planner):
         cycle_index: int,
         round_index: int,
     ) -> tuple[tuple[str, tuple[AssignmentProposal, ...]], ...]:
+        generated: list[tuple[str, tuple[AssignmentProposal, ...]]] = []
+        seen: set[tuple[tuple[str, str], ...]] = set()
         if self.policy == "top_k":
             strategies = self.priority_strategies
             limit = self.priority_candidate_count
+        elif self.policy == PriorityStrategy.RL.value:
+            if not self.rl_allow_deviation:
+                return (
+                    (
+                        "congestion_fallback",
+                        self._order_for_strategy(
+                            PriorityStrategy.CONGESTION,
+                            proposals,
+                            tasks_by_id,
+                            reservations,
+                            projections,
+                            now_ms,
+                            cycle_index,
+                            round_index,
+                            0,
+                        ),
+                    ),
+                )
+            limit = min(
+                self.priority_candidate_count,
+                max(1, int(getattr(self.rl_policy, "candidate_count", 1))),
+            )
+            if self.rl_policy is not None:
+                started = time.perf_counter_ns()
+                self.rl_inference_count += 1
+                inference_recorded = False
+                try:
+                    orders = self.rl_policy.priority_orders(
+                        proposals=proposals,
+                        tasks_by_id=tasks_by_id,
+                        projections=projections,
+                        reservations=reservations,
+                        now_ms=now_ms,
+                        priority_age_ms=self.priority_age_ms,
+                        count=limit,
+                    )
+                    elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
+                    self.rl_inference_ms += elapsed_ms
+                    inference_recorded = True
+                    if elapsed_ms > self.rl_inference_timeout_ms:
+                        raise TimeoutError(
+                            f"RL priority inference exceeded {self.rl_inference_timeout_ms} ms"
+                        )
+                    generated = []
+                    expected = {
+                        (item.vehicle_id, item.task_id) for item in proposals
+                    }
+                    for order in orders:
+                        signature = tuple(
+                            (item.vehicle_id, item.task_id) for item in order
+                        )
+                        if len(signature) != len(expected) or set(signature) != expected:
+                            raise ValueError("RL priority output is not a valid permutation")
+                        if signature in seen:
+                            continue
+                        seen.add(signature)
+                        generated.append((PriorityStrategy.RL.value, tuple(order)))
+                        if len(generated) >= limit:
+                            break
+                    if generated:
+                        guardian = self._order_for_strategy(
+                            PriorityStrategy.CONGESTION,
+                            proposals,
+                            tasks_by_id,
+                            reservations,
+                            projections,
+                            now_ms,
+                            cycle_index,
+                            round_index,
+                            0,
+                        )
+                        guardian_signature = tuple(
+                            (item.vehicle_id, item.task_id) for item in guardian
+                        )
+                        if guardian_signature not in seen:
+                            generated.append(("congestion_guardian", guardian))
+                            self.rl_guardian_candidate_count += 1
+                        return tuple(generated)
+                    raise ValueError("RL priority policy returned no candidates")
+                except Exception:
+                    elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
+                    if not inference_recorded:
+                        self.rl_inference_ms += elapsed_ms
+                    self.rl_fallback_count += 1
+            else:
+                self.rl_fallback_count += 1
+            # The fallback is deliberately routed through the existing heuristic.
+            return (
+                (
+                    "congestion_fallback",
+                    self._order_for_strategy(
+                        PriorityStrategy.CONGESTION,
+                        proposals,
+                        tasks_by_id,
+                        reservations,
+                        projections,
+                        now_ms,
+                        cycle_index,
+                        round_index,
+                        0,
+                    ),
+                ),
+            )
         else:
             strategies = (PriorityStrategy(self.policy),)
             limit = 1
 
-        generated: list[tuple[str, tuple[AssignmentProposal, ...]]] = []
-        seen: set[tuple[tuple[str, str], ...]] = set()
         for variant, strategy in enumerate(strategies):
             order = self._order_for_strategy(
                 strategy,

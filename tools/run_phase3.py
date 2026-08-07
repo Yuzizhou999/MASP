@@ -28,6 +28,7 @@ POLICIES = (
     "congestion",
     "previous_order",
     "random",
+    "rl",
 )
 
 
@@ -65,6 +66,9 @@ def execute_policy(
     schemas: Path,
     policy: str,
     seed: int,
+    rl_checkpoint: Path | None = None,
+    rl_candidate_count: int | None = None,
+    rl_allow_deviation: bool = False,
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     planning, planned_scenario = build_phase3_plans(
         scenario,
@@ -77,6 +81,9 @@ def execute_policy(
         schemas,
         policy=policy,
         seed=seed,
+        rl_checkpoint=rl_checkpoint,
+        rl_candidate_count=rl_candidate_count,
+        rl_allow_deviation=rl_allow_deviation,
     )
     if planning.unplanned_task_ids:
         raise RuntimeError(
@@ -106,13 +113,19 @@ def run_benchmark(
     traffic_zones: dict[str, Any],
     schemas: Path,
     primary_planning_summary: dict[str, Any],
+    rl_checkpoint: Path | None = None,
+    rl_candidate_count: int | None = None,
+    rl_allow_deviation: bool = False,
 ) -> dict[str, Any]:
     seeds = [int(value) for value in scheduler["coordination"]["benchmarkRandomSeeds"]]
     raw_runs: list[dict[str, Any]] = []
-    for policy, policy_seeds in (
+    benchmark_policies: list[tuple[str, list[int]]] = [
         ("congestion", [int(scenario["seed"])]),
         ("random", seeds),
-    ):
+    ]
+    if rl_checkpoint is not None:
+        benchmark_policies.append(("rl", seeds))
+    for policy, policy_seeds in benchmark_policies:
         for seed in policy_seeds:
             planning, _, simulation = execute_policy(
                 scenario=scenario,
@@ -125,6 +138,9 @@ def run_benchmark(
                 schemas=schemas,
                 policy=policy,
                 seed=seed,
+                rl_checkpoint=rl_checkpoint,
+                rl_candidate_count=rl_candidate_count,
+                rl_allow_deviation=rl_allow_deviation,
             )
             planning_summary = planning.summary()
             metrics = simulation["metrics"]
@@ -144,12 +160,24 @@ def run_benchmark(
                         planning_summary["reservationConflictRejections"]
                         + metrics["reservationConflictRejections"]
                     ),
+                    "rlInferenceCount": planning_summary["rlInferenceCount"],
+                    "rlFallbackCount": planning_summary["rlFallbackCount"],
+                    "rlSafetyFallbackCount": planning_summary[
+                        "rlSafetyFallbackCount"
+                    ],
+                    "rlGuardianCandidateCount": planning_summary[
+                        "rlGuardianCandidateCount"
+                    ],
+                    "rlGuardianOverrideCount": planning_summary[
+                        "rlGuardianOverrideCount"
+                    ],
+                    "rlInferenceMs": planning_summary["rlInferenceMs"],
                     "eventDigestSha256": simulation["eventDigestSha256"],
                 }
             )
 
     aggregates: dict[str, dict[str, Any]] = {}
-    for policy in ("congestion", "random"):
+    for policy, _ in benchmark_policies:
         rows = [item for item in raw_runs if item["policy"] == policy]
         aggregates[policy] = {
             "runCount": len(rows),
@@ -172,6 +200,20 @@ def run_benchmark(
             ),
             "reservationConflictRejections": sum(
                 item["reservationConflictRejections"] for item in rows
+            ),
+            "rlInferenceCount": sum(item["rlInferenceCount"] for item in rows),
+            "rlFallbackCount": sum(item["rlFallbackCount"] for item in rows),
+            "rlSafetyFallbackCount": sum(
+                item["rlSafetyFallbackCount"] for item in rows
+            ),
+            "rlGuardianCandidateCount": sum(
+                item["rlGuardianCandidateCount"] for item in rows
+            ),
+            "rlGuardianOverrideCount": sum(
+                item["rlGuardianOverrideCount"] for item in rows
+            ),
+            "meanRlInferenceMs": round(
+                statistics.fmean(item["rlInferenceMs"] for item in rows), 3
             ),
         }
 
@@ -198,13 +240,31 @@ def run_benchmark(
             for item in aggregates.values()
         ),
     }
+    if "rl" in aggregates:
+        checks["rlThroughputAboveBestBaseline"] = (
+            aggregates["rl"]["meanCompletedDropoffsPerHour"]
+            > max(
+                aggregates["congestion"]["meanCompletedDropoffsPerHour"],
+                aggregates["random"]["meanCompletedDropoffsPerHour"],
+            )
+        )
+        checks["rlInferenceHadNoFallback"] = aggregates["rl"]["rlFallbackCount"] == 0
+    acceptance_checks = {
+        key: value
+        for key, value in checks.items()
+        if key not in {"rlThroughputAboveBestBaseline"}
+    }
     return {
         "schemaVersion": 1,
         "randomSeeds": seeds,
         "runs": raw_runs,
         "aggregates": aggregates,
         "checks": checks,
-        "accepted": all(checks.values()),
+        "accepted": all(acceptance_checks.values()),
+        "rlExitConditionMet": bool(
+            checks.get("rlThroughputAboveBestBaseline", False)
+            and checks.get("rlInferenceHadNoFallback", True)
+        ),
     }
 
 
@@ -221,6 +281,21 @@ def main() -> None:
     parser.add_argument("--policy", choices=POLICIES)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--skip-benchmark", action="store_true")
+    parser.add_argument(
+        "--rl-checkpoint",
+        type=Path,
+        help="Phase 5 PPO checkpoint; invalid or missing checkpoints use congestion fallback",
+    )
+    parser.add_argument(
+        "--rl-candidates",
+        type=int,
+        help="override the number of sampled RL permutations evaluated per decision",
+    )
+    parser.add_argument(
+        "--rl-allow-deviation",
+        action="store_true",
+        help="experimental: allow RL to replace a feasible congestion guardian",
+    )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
         "--map",
@@ -259,6 +334,7 @@ def main() -> None:
     traffic_zones = load_json(args.traffic_zones)
     policy = args.policy or str(scheduler["coordination"]["defaultPolicy"])
     seed = int(scenario["seed"] if args.seed is None else args.seed)
+    rl_checkpoint = args.rl_checkpoint.resolve() if args.rl_checkpoint else None
     output_dir = (
         args.output_dir.resolve()
         if args.output_dir
@@ -276,6 +352,9 @@ def main() -> None:
         schemas=args.schemas,
         policy=policy,
         seed=seed,
+        rl_checkpoint=rl_checkpoint,
+        rl_candidate_count=args.rl_candidates,
+        rl_allow_deviation=args.rl_allow_deviation,
     )
     planning_summary = planning.summary()
     benchmark = None
@@ -290,6 +369,9 @@ def main() -> None:
             traffic_zones=traffic_zones,
             schemas=args.schemas,
             primary_planning_summary=planning_summary,
+            rl_checkpoint=rl_checkpoint,
+            rl_candidate_count=args.rl_candidates,
+            rl_allow_deviation=args.rl_allow_deviation,
         )
         if not benchmark["accepted"]:
             raise SystemExit("phase 3 benchmark acceptance checks failed")
@@ -312,11 +394,21 @@ def main() -> None:
                 "planningLatencyMs",
                 "planningTimeoutCount",
                 "planningPeriodMissCount",
+                "rlInferenceCount",
+                "rlFallbackCount",
+                "rlSafetyFallbackCount",
+                "rlGuardianCandidateCount",
+                "rlGuardianOverrideCount",
+                "rlAllowDeviation",
+                "rlInferenceMs",
             )
         },
         "simulation": simulation["metrics"],
         "eventDigestSha256": simulation["eventDigestSha256"],
         "benchmarkAccepted": benchmark["accepted"] if benchmark is not None else None,
+        "rlExitConditionMet": (
+            benchmark["rlExitConditionMet"] if benchmark is not None else None
+        ),
     }
     write_json(output_dir / "planned-scenario.json", planned_scenario)
     write_json(output_dir / "planning-summary.json", planning_summary)
@@ -348,7 +440,11 @@ def main() -> None:
                 "profilesSha256": sha256_file(args.profiles),
                 "schedulerSha256": sha256_file(args.scheduler),
                 "trafficZonesSha256": sha256_file(args.traffic_zones),
-                "rlCheckpointSha256": None,
+                "rlCheckpointSha256": (
+                    sha256_file(rl_checkpoint)
+                    if rl_checkpoint is not None and rl_checkpoint.is_file()
+                    else None
+                ),
             },
             "runtime": {
                 "python": sys.version.split()[0],

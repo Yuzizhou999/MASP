@@ -136,6 +136,8 @@ class ContinuousTimeSippPlanner:
                         best = (key, segments, wait_ms, completion)
                     break
                 except SippPlanningError as error:
+                    if error.suggested_delay_ms <= 0:
+                        break
                     delay = max(self.time_quantum_ms, error.suggested_delay_ms)
                     shift_ms += (
                         (delay + self.time_quantum_ms - 1)
@@ -655,7 +657,9 @@ class ContinuousTimeSippPlanner:
             return
         if duration_ms > self.max_wait_ms:
             raise SippPlanningError(
-                "sipp.wait.too_long", "planned wait exceeds maxPlannedWaitMs"
+                "sipp.wait.too_long",
+                "planned wait exceeds maxPlannedWaitMs",
+                suggested_delay_ms=duration_ms - self.max_wait_ms,
             )
         if not self.topology.wait_allowed(node_id, robot_group):
             raise SippPlanningError(
@@ -664,13 +668,20 @@ class ContinuousTimeSippPlanner:
                 suggested_delay_ms=duration_ms,
             )
         resource_id = f"node:{node_id}"
-        if not reservations.is_available(
-            resource_id, start_ms, end_ms, vehicle_id=vehicle_id
-        ):
+        blockers = reservations.overlapping(
+            resource_id,
+            start_ms,
+            end_ms,
+            vehicle_id=vehicle_id,
+        )
+        if blockers:
             raise SippPlanningError(
                 "sipp.wait.interval_occupied",
                 f"node {node_id!r} is unavailable for the required wait",
-                suggested_delay_ms=self.time_quantum_ms,
+                suggested_delay_ms=max(
+                    self.time_quantum_ms,
+                    max(item.end_ms - start_ms for item in blockers),
+                ),
             )
         segments.append(
             PlanSegment(

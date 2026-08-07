@@ -173,6 +173,10 @@ def build_phase3_plans(
     *,
     policy: str | None = None,
     seed: int | None = None,
+    priority_policy: Any | None = None,
+    rl_checkpoint: str | Path | None = None,
+    rl_candidate_count: int | None = None,
+    rl_allow_deviation: bool = False,
 ) -> tuple[Phase3PlanningResult, dict[str, Any]]:
     validate_phase3_scenario_document(scenario, schemas_dir)
     defaults = scheduler["serviceDefaults"]
@@ -194,6 +198,10 @@ def build_phase3_plans(
         traffic_zones,
         policy=policy,
         seed=int(scenario["seed"] if seed is None else seed),
+        priority_policy=priority_policy,
+        rl_checkpoint=str(rl_checkpoint) if rl_checkpoint is not None else None,
+        rl_candidate_count=rl_candidate_count,
+        rl_allow_deviation=rl_allow_deviation,
     ).plan(vehicles, tasks, int(scenario["endTimeMs"]))
     planned_scenario = {
         "schemaVersion": 1,

@@ -81,8 +81,30 @@ class EdgeTravelTimeModel:
         self.nodes = {item["id"]: item for item in model["nodes"]}
         self.profiles = profiles["robotGroups"]
         self.time_quantum_ms = time_quantum_ms
+        self._duration_cache: dict[tuple[Any, ...], int] = {}
+
+    @staticmethod
+    def _duration_key(
+        edge: dict[str, Any], load_state: LoadState
+    ) -> tuple[Any, ...]:
+        return (
+            edge["id"],
+            edge["robotGroup"],
+            edge["start"],
+            edge["end"],
+            float(edge["length"]),
+            int(edge.get("motionDirection", 0)),
+            edge.get("maxSpeed"),
+            edge.get("loadMaxSpeed"),
+            tuple(float(value) for point in ("p0", "p1", "p2", "p3") for value in edge[point]),
+            load_state,
+        )
 
     def duration_ms(self, edge: dict[str, Any], load_state: LoadState) -> int:
+        cache_key = self._duration_key(edge, load_state)
+        cached = self._duration_cache.get(cache_key)
+        if cached is not None:
+            return cached
         group = edge["robotGroup"]
         state_profile = self.profiles[group][
             "loaded" if load_state is LoadState.LOADED else "unloaded"
@@ -138,7 +160,9 @@ class EdgeTravelTimeModel:
         )
         # 总耗时 = 沿路走 + 两端转头，这里向上取整到 100ms 的倍数
         raw_ms = math.ceil((linear_seconds + angular_seconds) * 1000.0)
-        return max(
+        duration_ms = max(
             self.time_quantum_ms,
             math.ceil(raw_ms / self.time_quantum_ms) * self.time_quantum_ms,
         )
+        self._duration_cache[cache_key] = duration_ms
+        return duration_ms

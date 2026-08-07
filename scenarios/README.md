@@ -62,3 +62,19 @@ python tools/run_phase4.py scenarios/phase4-deadlock-recovery.json
 ```
 
 阶段 4 场景直接给出固定车辆意图和运行时 blocker 证据，不经过任务分配器，避免分配器交换任务后绕开目标窄路。
+
+## 真实班次多车多任务回放
+
+`phase3-realistic-multi-fleet.json` 使用完整的 6 辆 fork 与 8 辆 jack 车队，在 20 分钟内分八个波次释放 32 个任务。每波四个并发任务，任务包含短途、跨区长途和共享工位，可用于离线观察高峰期任务分配、排队、资源预留和规划耗时。当前实现可在本地约 20 秒内完成这一压力档，它适合做扩展性回放，不是交互演示档。
+
+首次运行建议跳过额外基线以缩短反馈时间：
+
+```powershell
+python tools/run_phase3.py scenarios/phase3-realistic-multi-fleet.json --policy congestion --skip-benchmark
+```
+
+`phase3-realistic-multi-fleet-interactive.json` 是较快的 4 车交互档，使用三波共 6 个任务，适合先检查完整输出和事件时间线：
+
+```powershell
+python tools/run_phase3.py scenarios/phase3-realistic-multi-fleet-interactive.json --policy congestion --skip-benchmark
+```

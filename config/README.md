@@ -58,6 +58,35 @@ python tools/run_phase4.py scenarios/phase4-deadlock-recovery.json
 
 结果写入 `runs/phase4-deadlock-recovery/`。`summary.json` 同时记录真实窄路入口外等待、两车等待环的沿当前边倒退，以及四车环无合法恢复路径时的安全停止。阶段 4 MVP 仅接受 `capacity=1`、禁止会车、同一时刻单方向通行的交通区；其他容量配置会在 Schema 或启动校验时被拒绝。
 
+阶段 5 的 RL 优先级插件需要单独安装训练依赖：
+
+```powershell
+python -m pip install -r requirements-rl.txt
+python tools/train_phase5.py scenarios/phase3-realistic-multi-fleet-interactive.json `
+  --state-source rolling --behavior-clone-epochs 4 `
+  --steps 256 --candidate-count 1 --output-dir runs/phase5-rl-priority
+```
+
+训练结果写入 `runs/phase5-rl-priority/priority-policy.pt` 和
+`training-summary.json`。使用 checkpoint 运行单候选 RL 推理及三策略对照：
+
+```powershell
+python tools/run_phase3.py scenarios/phase3-realistic-multi-fleet-interactive.json `
+  --policy rl `
+  --rl-checkpoint runs/phase5-rl-priority/priority-policy.pt `
+  --rl-candidates 1 `
+  --rl-allow-deviation `
+  --output-dir runs/phase5-rl-priority/interactive-benchmark
+```
+
+`--rl-candidates` 控制每个决策周期实际送入 SIPP 评估的 RL 排列数量。
+checkpoint 缺失、推理异常、超时或输出非法时会使用拥堵启发式；合法 RL
+排列若全部不可行，也会额外评估一次拥堵启发式候选。RL 只返回车辆优先级，
+不能直接写资源预留、提交计划或绕过 `PlanValidator`。CPU 推理默认使用单线程
+降低小 batch Transformer 的线程调度开销，可用 `MASP_RL_TORCH_THREADS` 覆盖。
+未指定 `--rl-allow-deviation` 时，RL checkpoint 不会替换 congestion guardian，
+适合安全回归；该开关只用于尚未达到阶段 5 退出条件的实验。
+
 ## 不要手工修改
 
 `generated/` 目录下的统一地图、冲突资源和工位文件由工具生成，不应手工添加注释或修改内容，否则下次构建会被覆盖。
