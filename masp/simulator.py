@@ -44,6 +44,10 @@ class DeterministicSimulator:
         self.released_task_ids: set[str] = set()
         self.vehicles = self._unique_by_id(vehicles, "vehicle_id", "vehicle")
         self.tasks = self._unique_by_id(tasks, "task_id", "task")
+        self._task_fingerprints = {
+            task_id: self._task_fingerprint(task)
+            for task_id, task in self.tasks.items()
+        }
         self.plans = self._unique_by_id(plans, "plan_id", "plan")
         self._plans_by_vehicle: dict[str, list[ValidatedPlan]] = {}
         self._prepare()
@@ -193,6 +197,138 @@ class DeterministicSimulator:
         self.reservations.insert_batch(reservation_batch)
 
     @staticmethod
+    def _task_fingerprint(task: TransportTask) -> tuple[Any, ...]:
+        return (
+            task.release_time_ms,
+            task.pickup_node_id,
+            task.dropoff_node_id,
+            task.required_robot_group,
+            task.payload_type,
+            task.payload_id,
+            task.pickup_service_ms,
+            task.dropoff_service_ms,
+            task.priority_class,
+            task.due_time_ms,
+        )
+
+    def submit_task(self, task: TransportTask) -> TransportTask:
+        """Idempotently add a task to a running simulation."""
+
+        existing = self.tasks.get(task.task_id)
+        fingerprint = self._task_fingerprint(task)
+        if existing is not None:
+            if self._task_fingerprints[task.task_id] == fingerprint:
+                return existing
+            raise DomainError(
+                "online.task.idempotency_conflict",
+                f"task {task.task_id!r} was resubmitted with different content",
+            )
+        if task.release_time_ms < self.now_ms:
+            raise DomainError(
+                "online.task.release_in_past",
+                f"task {task.task_id!r} was submitted after its release time",
+            )
+        if task.state is not TaskState.QUEUED or task.assigned_vehicle_id is not None:
+            raise DomainError(
+                "online.task.initial_state",
+                "online tasks must enter QUEUED and unassigned",
+            )
+        self.topology.validate_task(task)
+        self.tasks[task.task_id] = task
+        self._task_fingerprints[task.task_id] = fingerprint
+        self.event_queue.schedule(
+            task.release_time_ms,
+            EventType.TASK_RELEASED,
+            {"taskId": task.task_id},
+        )
+        return task
+
+    def add_plan(self, plan: VehiclePlan) -> ValidatedPlan:
+        """Validate, reserve, and inject one acknowledged plan at runtime."""
+
+        existing = self.plans.get(plan.plan_id)
+        if existing is not None:
+            if existing == plan:
+                return next(
+                    item
+                    for item in self._plans_by_vehicle[plan.vehicle_id]
+                    if item.plan.plan_id == plan.plan_id
+                )
+            raise DomainError(
+                "online.plan.idempotency_conflict",
+                f"plan {plan.plan_id!r} was resubmitted with different content",
+            )
+        if plan.created_at_ms < self.now_ms:
+            raise DomainError(
+                "online.plan.expired",
+                f"plan {plan.plan_id!r} was acknowledged after its start time",
+            )
+        vehicle = self.vehicles.get(plan.vehicle_id)
+        task = self.tasks.get(plan.task_id)
+        if vehicle is None or task is None:
+            raise DomainError(
+                "online.plan.reference",
+                f"plan {plan.plan_id!r} references an unknown vehicle or task",
+            )
+        if task.task_id not in self.released_task_ids:
+            raise DomainError(
+                "online.plan.before_release",
+                f"plan {plan.plan_id!r} was acknowledged before task release",
+            )
+        if task.state is not TaskState.QUEUED or vehicle.state is not VehicleState.IDLE:
+            raise DomainError(
+                "online.plan.state_changed",
+                f"plan {plan.plan_id!r} no longer matches an idle vehicle and queued task",
+            )
+        if any(
+            item.plan.task_id == task.task_id
+            for rows in self._plans_by_vehicle.values()
+            for item in rows
+        ):
+            raise DomainError(
+                "online.task.multiple_plans",
+                f"task {task.task_id!r} already has a plan",
+            )
+
+        validated = PlanValidator(self.topology).validate(plan, vehicle, task)
+        if plan.horizon_end_ms > self.end_time_ms:
+            raise DomainError(
+                "online.plan.after_end",
+                f"plan {plan.plan_id!r} exceeds scenario endTimeMs",
+            )
+        first = plan.segments[0]
+        last = plan.segments[-1]
+        replacement: list[Reservation] = []
+        if first.start_ms > self.now_ms:
+            replacement.extend(
+                self._occupancy_reservations(
+                    vehicle,
+                    plan_id=plan.plan_id,
+                    node_id=vehicle.current_node_id or "",
+                    start_ms=self.now_ms,
+                    end_ms=first.start_ms,
+                    label=f"pre-plan-{plan.revision}",
+                )
+            )
+        replacement.extend(validated.reservations())
+        if last.end_ms < self.end_time_ms:
+            replacement.extend(
+                self._occupancy_reservations(
+                    vehicle,
+                    plan_id=plan.plan_id,
+                    node_id=validated.final_node_id,
+                    start_ms=last.end_ms,
+                    end_ms=self.end_time_ms,
+                    label="idle-tail",
+                )
+            )
+        self.reservations.replace_vehicle(vehicle.vehicle_id, replacement)
+        self.plans[plan.plan_id] = plan
+        self._plans_by_vehicle.setdefault(vehicle.vehicle_id, []).append(validated)
+        self._schedule_plan(plan)
+        return validated
+
+    @staticmethod
     def _occupancy_reservations(
         vehicle: Vehicle,
         plan_id: str,
@@ -259,13 +395,18 @@ class DeterministicSimulator:
             self.event_queue.schedule(segment.start_ms, start_event, payload)
             self.event_queue.schedule(segment.end_ms, end_event, payload)
 
-    def run(self) -> dict[str, Any]:
-        while self.event_queue and self.event_queue.peek().time_ms <= self.end_time_ms:
+    def run_until(self, target_time_ms: int) -> None:
+        if target_time_ms < self.now_ms or target_time_ms > self.end_time_ms:
+            raise ValueError("run_until target must be monotonic and within the scenario")
+        while self.event_queue and self.event_queue.peek().time_ms <= target_time_ms:
             event = self.event_queue.pop()
             self.now_ms = event.time_ms
             self._apply(event)
             self._record(event)
-        self.now_ms = self.end_time_ms
+        self.now_ms = target_time_ms
+
+    def run(self) -> dict[str, Any]:
+        self.run_until(self.end_time_ms)
         return self.result()
 
     def _apply(self, event: SimulationEvent) -> None:

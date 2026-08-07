@@ -235,6 +235,14 @@ class Phase3PlanningResult:
         return result
 
 
+@dataclass(frozen=True)
+class Phase3CycleProposal:
+    plans: tuple[VehiclePlan, ...]
+    records: tuple[PlanningRecord, ...]
+    cycle: RollingCycleRecord
+    proposed_reservations: ReservationTable
+
+
 @dataclass
 class _CandidateOutcome:
     record: PriorityCandidateRecord
@@ -319,6 +327,161 @@ class RollingHorizonPlanner(Phase2Planner):
             vehicle_id: max(0, int(age_ms))
             for vehicle_id, age_ms in ages_ms.items()
         }
+
+    def plan_cycle(
+        self,
+        vehicles: list[Vehicle],
+        tasks: list[TransportTask],
+        now_ms: int,
+        end_time_ms: int,
+        reservations: ReservationTable,
+        *,
+        cycle_index: int = 0,
+        plan_counts: Counter[str] | None = None,
+        excluded_pairs: frozenset[tuple[str, str]] = frozenset(),
+    ) -> Phase3CycleProposal:
+        """Plan one online decision cycle without mutating the live reservation table."""
+
+        if now_ms < 0 or end_time_ms <= now_ms:
+            raise ValueError("online planning requires 0 <= now_ms < end_time_ms")
+        if self.policy == PriorityStrategy.RL.value and self.rl_allow_deviation:
+            raise DomainError(
+                "phase3.online.rl_deviation_unsupported",
+                "online planning does not yet support experimental RL deviation",
+            )
+
+        projections, tasks_by_id = self._validate_inputs(vehicles, tasks)
+        working_reservations = self._copy_reservations(reservations)
+        local_plan_counts = Counter(plan_counts or {})
+        planned_task_ids: set[str] = set()
+        plans: list[VehiclePlan] = []
+        records: list[PlanningRecord] = []
+        candidate_records: list[PriorityCandidateRecord] = []
+        selected_ids: list[str] = []
+        commitments: list[SafeCommitment] = []
+        excluded_pairs_this_cycle: set[tuple[str, str]] = set(excluded_pairs)
+        pending_at_start = [
+            task for task in tasks if task.release_time_ms <= now_ms
+        ]
+        available_at_start = [
+            vehicle
+            for vehicle in projections.values()
+            if vehicle.available_at_ms <= now_ms
+        ]
+        round_index = 0
+        cycle_started = time.perf_counter_ns()
+
+        while True:
+            pending = [
+                task
+                for task in tasks
+                if task.task_id not in planned_task_ids
+                and task.release_time_ms <= now_ms
+            ]
+            available = [
+                vehicle
+                for vehicle in projections.values()
+                if vehicle.available_at_ms <= now_ms
+            ]
+            proposals = self.allocator.assign(
+                available,
+                pending,
+                now_ms,
+                frozenset(excluded_pairs_this_cycle),
+            )
+            if not proposals:
+                break
+
+            orders = self._priority_orders(
+                proposals,
+                tasks_by_id,
+                working_reservations,
+                projections,
+                now_ms,
+                cycle_index,
+                round_index,
+            )
+            outcomes = [
+                self._evaluate_candidate(
+                    candidate_id=(
+                        f"online-cycle-{cycle_index:04d}-round-{round_index:02d}"
+                        f"-candidate-{index:02d}"
+                    ),
+                    strategy=strategy,
+                    order=order,
+                    now_ms=now_ms,
+                    end_time_ms=end_time_ms,
+                    tasks_by_id=tasks_by_id,
+                    base_projections=projections,
+                    base_reservations=working_reservations,
+                    plan_counts=local_plan_counts,
+                )
+                for index, (strategy, order) in enumerate(orders)
+            ]
+            candidate_records.extend(item.record for item in outcomes)
+            feasible = [item for item in outcomes if item.record.feasible]
+            if not feasible:
+                failed = [
+                    item.record
+                    for item in outcomes
+                    if item.record.failure_pair is not None
+                ]
+                if not failed:
+                    break
+                failure = min(
+                    failed,
+                    key=lambda item: (
+                        -item.planned_task_count,
+                        item.failure_pair or ("", ""),
+                        item.candidate_id,
+                    ),
+                )
+                excluded_pairs_this_cycle.add(failure.failure_pair or ("", ""))
+                round_index += 1
+                continue
+
+            selected = min(
+                feasible,
+                key=lambda item: (
+                    item.record.score.ordering_key()
+                    if item.record.score is not None
+                    else (math.inf,),
+                    item.record.strategy,
+                    item.record.order,
+                ),
+            )
+            projections = selected.projections
+            working_reservations = selected.reservations
+            plans.extend(selected.plans)
+            records.extend(selected.records)
+            selected_ids.append(selected.record.candidate_id)
+            for plan in selected.plans:
+                planned_task_ids.add(plan.task_id)
+                local_plan_counts[plan.vehicle_id] += 1
+                commitments.append(
+                    self._safe_commitment(plan, projections[plan.vehicle_id])
+                )
+            self.previous_order = tuple(
+                vehicle_id for vehicle_id, _ in selected.record.order
+            )
+            round_index += 1
+
+        duration_ms = (time.perf_counter_ns() - cycle_started) / 1_000_000
+        return Phase3CycleProposal(
+            plans=tuple(plans),
+            records=tuple(records),
+            cycle=RollingCycleRecord(
+                cycle_index=cycle_index,
+                decision_time_ms=now_ms,
+                pending_task_count=len(pending_at_start),
+                available_vehicle_count=len(available_at_start),
+                candidates=tuple(candidate_records),
+                selected_candidate_ids=tuple(selected_ids),
+                commitments=tuple(commitments),
+                planning_duration_ms=duration_ms,
+            ),
+            proposed_reservations=working_reservations,
+        )
 
     def plan(
         self,

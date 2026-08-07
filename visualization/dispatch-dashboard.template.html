@@ -290,7 +290,8 @@ toggleMapSize.addEventListener('click',()=>setMapExpanded(!mapPanel.classList.co
 document.addEventListener('keydown',event=>{if(event.key === 'Escape' && mapPanel.classList.contains('is-expanded')) setMapExpanded(false);});
 document.getElementById('reset-view').addEventListener('click',()=>{svg.setAttribute('viewBox',`0 0 ${mapW} ${mapH}`);});
 document.getElementById('subtitle').textContent=`${DATA.scenarioId} · ${DATA.vehicles.length} 辆车 · ${DATA.tasks.length} 个任务`;
-document.getElementById('meta').textContent=`仿真时长 ${fmtMs(DATA.endTimeMs)} · seed ${DATA.seed ?? '-'} · 本地离线回放`;
+const replayModeLabel=DATA.replayMode==='online'?'在线调度事件回放':'本地离线回放';
+document.getElementById('meta').textContent=`仿真时长 ${fmtMs(DATA.endTimeMs)} · seed ${DATA.seed ?? '-'} · ${replayModeLabel}`;
 renderMap(); drawRoute(); render();
 </script>
 </body>

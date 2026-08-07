@@ -73,8 +73,20 @@ python tools/run_phase4.py scenarios/phase4-deadlock-recovery.json
 python tools/run_phase3.py scenarios/phase3-realistic-multi-fleet.json --policy congestion --skip-benchmark
 ```
 
+阶段 6 在线模拟会在任务发布时刻才把任务提交给调度器，并在每次计划 ACK 后动态注入执行事件：
+
+```powershell
+python tools/run_phase6_online.py scenarios/phase3-realistic-multi-fleet.json --policy congestion
+```
+
 `phase3-realistic-multi-fleet-interactive.json` 是较快的 4 车交互档，使用三波共 6 个任务，适合先检查完整输出和事件时间线：
 
 ```powershell
 python tools/run_phase3.py scenarios/phase3-realistic-multi-fleet-interactive.json --policy congestion --skip-benchmark
+```
+
+对应的快速在线验证：
+
+```powershell
+python tools/run_phase6_online.py scenarios/phase3-realistic-multi-fleet-interactive.json --policy congestion
 ```

@@ -147,12 +147,18 @@ def build_bundle(
         "scenarioId": planned.get("scenarioId") or scenario.get("scenarioId") or run_dir.name,
         "seed": planned.get("seed", scenario.get("seed")),
         "endTimeMs": end_time,
+        "replayMode": (
+            "online"
+            if result.get("online") or manifest.get("mode") == "online-simulation"
+            else "offline"
+        ),
         "map": compact_map(load_json(map_path)),
         "vehicles": vehicles,
         "tasks": tasks,
         "plans": plans,
         "events": result.get("eventLog", []),
         "metrics": result.get("metrics", {}),
+        "online": result.get("online", {}),
         "planning": planning,
         "manifest": manifest,
     }
