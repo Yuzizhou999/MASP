@@ -33,6 +33,18 @@ h1 { margin: 0; font-size: 25px; letter-spacing: 0; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
 .map-panel { min-width: 0; overflow: hidden; }
+.map-panel.is-expanded {
+  position: fixed;
+  inset: 12px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  box-shadow: 0 18px 60px rgb(24 39 54 / 24%);
+}
+.map-panel.is-expanded .map-wrap { flex: 1 1 auto; min-height: 0; }
+.map-panel.is-expanded #map { height: 100%; min-height: 0; }
+body.map-expanded { overflow: hidden; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 15px; border-bottom: 1px solid var(--line); }
 .panel-heading h2 { margin: 0; font-size: 15px; }
 .map-wrap { position: relative; min-height: 620px; background: #f8fbfd; }
@@ -96,7 +108,7 @@ h1 { margin: 0; font-size: 25px; letter-spacing: 0; }
       <div class="panel-heading"><h2>仓库地图与实时车辆位置</h2><span id="map-status" class="subtitle"></span></div>
       <div class="map-wrap">
         <svg id="map" role="img" aria-label="仓库调度地图"></svg>
-        <div class="map-toolbar"><button id="toggle-labels" type="button" aria-pressed="false">显示站点标签</button><button id="reset-view" type="button">重置视图</button></div>
+        <div class="map-toolbar"><button id="toggle-map-size" type="button" aria-pressed="false">放大地图</button><button id="toggle-labels" type="button" aria-pressed="false">显示站点标签</button><button id="reset-view" type="button">重置视图</button></div>
       </div>
       <div class="legend"><span><i class="swatch fork"></i>Fork 车</span><span><i class="swatch jack"></i>Jack 车</span><span><i class="swatch shared"></i>共享路径</span><span>紫色节点：工位 AP</span></div>
     </section>
@@ -266,6 +278,16 @@ document.getElementById('play').addEventListener('click',()=>{playing=!playing;l
 document.getElementById('reset-time').addEventListener('click',()=>{playing=false;lastTick=0;setTime(0);});
 document.getElementById('time').max=String(DATA.endTimeMs); document.getElementById('time').addEventListener('input',event=>{playing=false;setTime(event.target.value);});
 document.getElementById('toggle-labels').addEventListener('click',event=>{document.body.classList.toggle('show-labels');event.currentTarget.setAttribute('aria-pressed',String(document.body.classList.contains('show-labels')));});
+const mapPanel = document.querySelector('.map-panel');
+const toggleMapSize = document.getElementById('toggle-map-size');
+function setMapExpanded(expanded) {
+  mapPanel.classList.toggle('is-expanded', expanded);
+  document.body.classList.toggle('map-expanded', expanded);
+  toggleMapSize.setAttribute('aria-pressed', String(expanded));
+  toggleMapSize.textContent = expanded ? '关闭放大' : '放大地图';
+}
+toggleMapSize.addEventListener('click',()=>setMapExpanded(!mapPanel.classList.contains('is-expanded')));
+document.addEventListener('keydown',event=>{if(event.key === 'Escape' && mapPanel.classList.contains('is-expanded')) setMapExpanded(false);});
 document.getElementById('reset-view').addEventListener('click',()=>{svg.setAttribute('viewBox',`0 0 ${mapW} ${mapH}`);});
 document.getElementById('subtitle').textContent=`${DATA.scenarioId} · ${DATA.vehicles.length} 辆车 · ${DATA.tasks.length} 个任务`;
 document.getElementById('meta').textContent=`仿真时长 ${fmtMs(DATA.endTimeMs)} · seed ${DATA.seed ?? '-'} · 本地离线回放`;
