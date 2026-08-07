@@ -125,8 +125,13 @@ svg.setAttribute('viewBox', `0 0 ${mapW} ${mapH}`);
 const ns = 'http://www.w3.org/2000/svg';
 const edgeById = new Map(DATA.map.edges.map(edge => [edge.id, edge]));
 const nodeById = new Map(DATA.map.nodes.map(node => [node.id, node]));
-const planByVehicle = new Map();
-for (const plan of DATA.plans) planByVehicle.set(plan.vehicleId, plan);
+const plansByVehicle = new Map();
+for (const plan of DATA.plans) {
+  const plans = plansByVehicle.get(plan.vehicleId) || [];
+  plans.push(plan);
+  plansByVehicle.set(plan.vehicleId, plans);
+}
+for (const plans of plansByVehicle.values()) plans.sort((a,b) => a.createdAtMs - b.createdAtMs);
 const vehicleById = new Map(DATA.vehicles.map(vehicle => [vehicle.vehicleId, vehicle]));
 const taskById = new Map(DATA.tasks.map(task => [task.taskId, task]));
 let selectedVehicle = null;
@@ -170,11 +175,12 @@ function renderMap() {
 }
 
 function positionFor(vehicleId, timeMs) {
-  const plan = planByVehicle.get(vehicleId);
+  const plans = plansByVehicle.get(vehicleId) || [];
   const vehicle = vehicleById.get(vehicleId);
-  if (!plan) return {point: nodeById.get(vehicle?.initialNodeId), segment:null};
+  if (!plans.length) return {point: nodeById.get(vehicle?.initialNodeId), segment:null};
+  const segments = plans.flatMap(plan => plan.segments).sort((a,b) => a.startMs - b.startMs);
   let previous = null;
-  for (const segment of plan.segments) {
+  for (const segment of segments) {
     if (timeMs < segment.startMs) break;
     if (timeMs <= segment.endMs) {
       const edge = segment.edgeId ? edgeById.get(segment.edgeId) : null;
@@ -205,23 +211,25 @@ function drawVehicles() {
 function drawRoute() {
   const route = document.getElementById('route-highlight');
   if (!selectedVehicle) { route.setAttribute('d',''); return; }
-  const plan = planByVehicle.get(selectedVehicle); if (!plan) return;
-  const paths = plan.segments.map(segment => segment.edgeId ? edgeById.get(segment.edgeId) : null).filter(Boolean);
+  const plans = plansByVehicle.get(selectedVehicle) || [];
+  const paths = plans.flatMap(plan => plan.segments).map(segment => segment.edgeId ? edgeById.get(segment.edgeId) : null).filter(Boolean);
   route.setAttribute('d', paths.map(pathD).join(' '));
 }
 
 function taskStatus(task) {
-  if (task.state === 'COMPLETED' || (task.completedAtMs != null && currentMs >= task.completedAtMs)) return ['已完成','done'];
+  if (task.completedAtMs != null && currentMs >= task.completedAtMs) return ['已完成','done'];
   if (task.pickedAtMs != null && currentMs >= task.pickedAtMs) return ['运输中','active'];
   if (currentMs < task.releaseTimeMs) return ['未释放','wait'];
   return ['排队中','wait'];
 }
 function vehicleStatus(vehicle) {
-  const plan = planByVehicle.get(vehicle.vehicleId); const active = plan?.segments.find(segment => currentMs >= segment.startMs && currentMs <= segment.endMs);
+  const plans = plansByVehicle.get(vehicle.vehicleId) || [];
+  const segments = plans.flatMap(plan => plan.segments);
+  const active = segments.find(segment => currentMs >= segment.startMs && currentMs <= segment.endMs);
   if (active?.kind === 'pickup' || active?.kind === 'dropoff') return [active.kind === 'pickup' ? '取货服务' : '放货服务','active',active];
   if (active?.kind === 'wait') return ['等待','wait',active];
   if (active?.kind === 'traverse') return ['行驶中','active',active];
-  if (currentMs < (plan?.createdAtMs || 0)) return ['待命','wait',active];
+  if (currentMs < (plans[0]?.createdAtMs || 0)) return ['待命','wait',active];
   return ['空闲','done',active];
 }
 function renderLists() {
@@ -244,6 +252,7 @@ function renderStats() {
 }
 function renderTimeline() {
   const el = document.getElementById('timeline'); const visible = DATA.events.filter(event => event.timeMs <= currentMs).slice(-18).reverse(); el.replaceChildren();
+  document.getElementById('event-count').textContent = `${visible.length}/${DATA.events.length}`;
   if (!visible.length) { el.innerHTML='<div class="empty">时间线上还没有发生事件</div>'; return; }
   for (const event of visible) { const payload=event.payload||{}; const detail=payload.vehicleId || payload.taskId || payload.planId || ''; const row=document.createElement('div'); row.className='event'; row.innerHTML=`<div class="event-time">${fmtMs(event.timeMs)}</div><div><div class="event-type">${safe(label(event.type))}</div><div class="event-detail">${safe(detail)}</div></div>`; el.appendChild(row); }
   document.getElementById('event-count').textContent = `${visible.length}/${DATA.events.length}`;
