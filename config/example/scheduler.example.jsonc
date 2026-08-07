@@ -33,7 +33,7 @@
     // 每隔多少毫秒重新进行一次滚动规划。
     "planningPeriodMs": 5000,
     // 每次向未来规划多长时间。
-    "planningHorizonMs": 20000,
+    "planningHorizonMs": 120000,
     // 每次只提交近期多少毫秒的计划，远期计划可以再次调整。
     "executionHorizonMs": 5000,
     // 单次规划允许使用的最长计算时间。

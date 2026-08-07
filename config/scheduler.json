@@ -18,7 +18,7 @@
   },
   "planner": {
     "planningPeriodMs": 5000,
-    "planningHorizonMs": 20000,
+    "planningHorizonMs": 120000,
     "executionHorizonMs": 5000,
     "planningTimeoutMs": 1000,
     "candidateRouteCount": 3,

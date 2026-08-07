@@ -392,3 +392,45 @@ def test_sipp_delays_whole_zone_section_at_the_outside_entry_node() -> None:
     )
     assert "zone:narrow" not in traversals[3].resource_ids
     assert segments[-1].end_ms == expected_delay + sum(durations)
+
+
+def test_sipp_allows_zone_route_to_end_before_an_outside_safe_node() -> None:
+    model, conflicts, workstations, profiles, scheduler, zones = documents()
+    topology = MapTopology(model, conflicts, workstations, zones)
+    travel_times = EdgeTravelTimeModel(model, profiles, time_quantum_ms=100)
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        RouteProvider(model, travel_times),
+        travel_times,
+        scheduler,
+        recovery_node_ids=("A", "X"),
+    )
+    vehicle = Vehicle(
+        vehicle_id="vehicle-a",
+        robot_group="fork",
+        current_node_id="A",
+        heading_rad=0.0,
+        load_state=LoadState.EMPTY,
+    )
+    route = SpatialRoute(
+        start_node_id="A",
+        end_node_id="Y",
+        edge_ids=("e-entry", "e-member", "e-exit"),
+        free_flow_travel_ms=0,
+    )
+
+    segments = planner.schedule_route_intent(
+        vehicle,
+        route,
+        ready_ms=0,
+        load_state=LoadState.EMPTY,
+        reservations=ReservationTable(),
+        horizon_end_ms=100_000,
+    )
+
+    traversals = [item for item in segments if item.kind is SegmentKind.TRAVERSE]
+    assert [item.edge_id for item in traversals] == list(route.edge_ids)
+    assert all("zone:narrow" in item.resource_ids for item in traversals)
+    assert all(
+        left.end_ms == right.start_ms for left, right in zip(traversals, traversals[1:])
+    )

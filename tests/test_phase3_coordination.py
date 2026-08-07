@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-from masp.domain import SegmentKind, TransportTask, Vehicle
+from masp.domain import LoadState, SegmentKind, TransportTask, Vehicle
+from masp.motion import EdgeTravelTimeModel
 from masp.phase3 import CandidateScore, RollingHorizonPlanner
+from masp.routing import RouteProvider
 from masp.scenario import (
     build_phase3_plans,
     build_simulator,
@@ -252,3 +254,45 @@ def test_realistic_pressure_tasks_are_individually_schedulable(
             seed=0,
         )
         assert planning.unplanned_task_ids == (), task["taskId"]
+
+
+def test_realistic_pressure_scenario_exercises_jack_shared_corridors(
+    phase3_documents,
+) -> None:
+    model, _, _, profiles, scheduler, _ = phase3_documents
+    scenario = read_json("scenarios/phase3-realistic-multi-fleet.json")
+    routes = RouteProvider(
+        model,
+        EdgeTravelTimeModel(
+            model,
+            profiles,
+            time_quantum_ms=int(scheduler["planner"]["timeQuantumMs"]),
+        ),
+    )
+    edges = {item["id"]: item for item in model["edges"]}
+    shared_task_count = 0
+    shared_node_visits = 0
+
+    for task in scenario["tasks"]:
+        if task["requiredRobotGroup"] != "jack":
+            continue
+        shortest = routes.candidate_routes(
+            "jack",
+            task["pickupNodeId"],
+            task["dropoffNodeId"],
+            LoadState.LOADED,
+            limit=1,
+        )
+        assert shortest, task["taskId"]
+        shared_nodes = {
+            node_id
+            for edge_id in shortest[0].edge_ids
+            for node_id in (edges[edge_id]["start"], edges[edge_id]["end"])
+            if node_id.startswith("shared:")
+        }
+        if shared_nodes:
+            shared_task_count += 1
+            shared_node_visits += len(shared_nodes)
+
+    assert shared_task_count >= 8
+    assert shared_node_visits >= 40

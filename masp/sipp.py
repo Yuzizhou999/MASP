@@ -412,6 +412,7 @@ class ContinuousTimeSippPlanner:
         robot_group: str,
     ) -> int:
         exited = False
+        exit_index: int | None = None
         for index in range(entry_index, len(edge_ids)):
             edge_id = edge_ids[index]
             edge = self.topology.edges[edge_id]
@@ -422,6 +423,8 @@ class ContinuousTimeSippPlanner:
                         f"route leaves zone {zone.zone_id!r} without a configured exit edge",
                     )
                 exited = edge_id in zone.exit_edge_ids
+                if exited:
+                    exit_index = index
             elif self.topology.traffic_zones.entry_zone_for_edge(edge_id) is not None:
                 raise SippPlanningError(
                     "sipp.zone.safe_node_missing",
@@ -435,6 +438,12 @@ class ContinuousTimeSippPlanner:
                 and self.topology.traffic_zones.zone_for_node(end_node_id) is None
             ):
                 return index
+        # A task route can end at an AP before its later recovery route reaches
+        # a PP/CP. Schedule the complete zone traversal atomically here; normal
+        # edge scheduling still rejects any wait on the following LM/AP, while
+        # RH-PP extends the committed prefix to the recovery route's safe node.
+        if exit_index is not None:
+            return exit_index
         code = "sipp.zone.safe_node_missing" if exited else "sipp.zone.exit_missing"
         raise SippPlanningError(
             code,

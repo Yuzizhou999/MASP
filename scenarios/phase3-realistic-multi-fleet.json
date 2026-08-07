@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "scenarioId": "phase3-realistic-multi-fleet",
   "seed": 0,
-  "endTimeMs": 1200000,
+  "endTimeMs": 1500000,
   "vehicles": [
     {
       "vehicleId": "fork-001",
@@ -159,8 +159,8 @@
     {
       "taskId": "shift-jack-001",
       "releaseTimeMs": 60000,
-      "pickupNodeId": "jack:AP357",
-      "dropoffNodeId": "jack:AP96",
+      "pickupNodeId": "jack:AP146",
+      "dropoffNodeId": "jack:AP189",
       "requiredRobotGroup": "jack",
       "payloadType": "shelf",
       "payloadId": "shelf-001",
@@ -172,8 +172,8 @@
     {
       "taskId": "shift-jack-002",
       "releaseTimeMs": 60000,
-      "pickupNodeId": "jack:AP96",
-      "dropoffNodeId": "jack:AP357",
+      "pickupNodeId": "jack:AP189",
+      "dropoffNodeId": "jack:AP146",
       "requiredRobotGroup": "jack",
       "payloadType": "shelf",
       "payloadId": "shelf-002",
@@ -367,8 +367,8 @@
     {
       "taskId": "shift-jack-009",
       "releaseTimeMs": 360000,
-      "pickupNodeId": "jack:AP3461",
-      "dropoffNodeId": "jack:AP95",
+      "pickupNodeId": "jack:AP148",
+      "dropoffNodeId": "jack:AP150",
       "requiredRobotGroup": "jack",
       "payloadType": "shelf",
       "payloadId": "shelf-009",
@@ -380,8 +380,8 @@
     {
       "taskId": "shift-jack-010",
       "releaseTimeMs": 360000,
-      "pickupNodeId": "jack:AP95",
-      "dropoffNodeId": "jack:AP3461",
+      "pickupNodeId": "jack:AP150",
+      "dropoffNodeId": "jack:AP148",
       "requiredRobotGroup": "jack",
       "payloadType": "shelf",
       "payloadId": "shelf-010",
@@ -471,8 +471,8 @@
     {
       "taskId": "shift-jack-013",
       "releaseTimeMs": 510000,
-      "pickupNodeId": "jack:AP357",
-      "dropoffNodeId": "jack:AP99",
+      "pickupNodeId": "jack:AP147",
+      "dropoffNodeId": "jack:AP149",
       "requiredRobotGroup": "jack",
       "payloadType": "shelf",
       "payloadId": "shelf-013",
@@ -484,8 +484,8 @@
     {
       "taskId": "shift-jack-014",
       "releaseTimeMs": 510000,
-      "pickupNodeId": "jack:AP99",
-      "dropoffNodeId": "jack:AP357",
+      "pickupNodeId": "jack:AP149",
+      "dropoffNodeId": "jack:AP147",
       "requiredRobotGroup": "jack",
       "payloadType": "shelf",
       "payloadId": "shelf-014",
@@ -497,8 +497,8 @@
     {
       "taskId": "shift-jack-015",
       "releaseTimeMs": 510000,
-      "pickupNodeId": "jack:AP3460",
-      "dropoffNodeId": "jack:AP101",
+      "pickupNodeId": "jack:AP144",
+      "dropoffNodeId": "jack:AP148",
       "requiredRobotGroup": "jack",
       "payloadType": "shelf",
       "payloadId": "shelf-015",
@@ -510,8 +510,8 @@
     {
       "taskId": "shift-jack-016",
       "releaseTimeMs": 510000,
-      "pickupNodeId": "jack:AP101",
-      "dropoffNodeId": "jack:AP3460",
+      "pickupNodeId": "jack:AP148",
+      "dropoffNodeId": "jack:AP144",
       "requiredRobotGroup": "jack",
       "payloadType": "shelf",
       "payloadId": "shelf-016",
