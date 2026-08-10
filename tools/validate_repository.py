@@ -240,7 +240,7 @@ def validate_repository(
             ValidationIssue(
                 "error",
                 "fleet.dynamic_unsupported",
-                "phase 0 requires a fleet that remains fixed during each run",
+                "the reference runtime requires a fleet that remains fixed during each run",
             )
         )
     for value in duplicate_values(item["vehicleId"] for item in vehicles["vehicles"]):
@@ -419,7 +419,7 @@ def validate_repository(
             ValidationIssue(
                 "error",
                 "wait.long_term_unsupported",
-                "phase 0 permits waiting only as a bounded short-term action",
+                "the reference runtime permits waiting only as a bounded short-term action",
             )
         )
     if reverse["alongCurrentEdgeAllowed"] and reverse["mode"] not in {"recovery_only", "planned"}:
@@ -458,7 +458,7 @@ def validate_repository(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate MASP phase 0 models and configuration")
+    parser = argparse.ArgumentParser(description="Validate MASP models and configuration")
     parser.add_argument("--map", type=Path, default=Path("generated/xiate-unified-map-model.json"))
     parser.add_argument("--conflicts", type=Path, default=Path("generated/xiate-conflict-resources.json"))
     parser.add_argument("--profiles", type=Path, default=Path("config/robot-profiles.json"))

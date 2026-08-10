@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://masp.local/schemas/phase4-scenario.schema.json",
-  "title": "MASP phase 4 deadlock supervision scenario",
+  "$id": "https://masp.local/schemas/recovery-scenario.schema.json",
+  "title": "MASP deadlock supervision and recovery scenario",
   "type": "object",
   "additionalProperties": false,
   "required": [

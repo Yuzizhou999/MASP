@@ -32,11 +32,14 @@ class PlanningRecord:
     completion_time_ms: int
     inserted_wait_ms: int
     route_combinations_tried: int
+    route_combinations_pruned: int
     schedule_attempts: int
+    route_expansion_level: int
+    deadline_exhausted: bool
 
 
 @dataclass(frozen=True)
-class Phase2PlanningResult:
+class PlanningResult:
     plans: tuple[VehiclePlan, ...]
     records: tuple[PlanningRecord, ...]
     unplanned_task_ids: tuple[str, ...]
@@ -51,7 +54,16 @@ class Phase2PlanningResult:
             "routeCombinationsTried": sum(
                 item.route_combinations_tried for item in self.records
             ),
+            "routeCombinationsPruned": sum(
+                item.route_combinations_pruned for item in self.records
+            ),
             "scheduleAttempts": sum(item.schedule_attempts for item in self.records),
+            "maxRouteExpansionLevel": max(
+                (item.route_expansion_level for item in self.records), default=0
+            ),
+            "sippDeadlineExhaustedCount": sum(
+                item.deadline_exhausted for item in self.records
+            ),
             "reservationConflictRejections": self.reservation_conflict_rejections,
             "assignments": [
                 {
@@ -67,7 +79,7 @@ class Phase2PlanningResult:
         }
 
 
-class Phase2Planner:
+class TaskPlanner:
     def __init__(
         self,
         topology: MapTopology,
@@ -102,7 +114,7 @@ class Phase2Planner:
         vehicles: list[Vehicle],
         tasks: list[TransportTask],
         end_time_ms: int,
-    ) -> Phase2PlanningResult:
+    ) -> PlanningResult:
         projections = {
             vehicle.vehicle_id: replace(vehicle, state_durations_ms=Counter())
             for vehicle in vehicles
@@ -116,13 +128,13 @@ class Phase2Planner:
                 vehicle.current_node_id or "", vehicle.robot_group
             ):
                 raise DomainError(
-                    "phase2.vehicle.initial_wait_disallowed",
+                    "planning.vehicle.initial_wait_disallowed",
                     f"vehicle {vehicle.vehicle_id!r} must start at a waitable node",
                 )
         for task in tasks:
             if task.state is not TaskState.QUEUED or task.assigned_vehicle_id is not None:
                 raise DomainError(
-                    "phase2.task.initial_state",
+                    "planning.task.initial_state",
                     f"task {task.task_id!r} must start QUEUED and unassigned",
                 )
             self.topology.validate_task(task)
@@ -227,7 +239,7 @@ class Phase2Planner:
                 break
             now_ms = next_now
 
-        return Phase2PlanningResult(
+        return PlanningResult(
             plans=tuple(sorted(plans, key=lambda item: (item.created_at_ms, item.vehicle_id))),
             records=tuple(records),
             unplanned_task_ids=tuple(sorted(set(tasks_by_id) - planned_tasks)),
@@ -249,7 +261,10 @@ class Phase2Planner:
             completion_time_ms=diagnostics.completion_time_ms,
             inserted_wait_ms=diagnostics.inserted_wait_ms,
             route_combinations_tried=diagnostics.route_combinations_tried,
+            route_combinations_pruned=diagnostics.route_combinations_pruned,
             schedule_attempts=diagnostics.schedule_attempts,
+            route_expansion_level=diagnostics.route_expansion_level,
+            deadline_exhausted=diagnostics.deadline_exhausted,
         )
 
     @staticmethod

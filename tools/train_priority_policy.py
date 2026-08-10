@@ -15,7 +15,7 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from masp.domain import TransportTask, Vehicle  # noqa: E402
-from masp.phase3 import PriorityStrategy, RollingHorizonPlanner  # noqa: E402
+from masp.coordination import PriorityStrategy, RollingHorizonPlanner  # noqa: E402
 from masp.reservations import ReservationTable  # noqa: E402
 from masp.rl_priority import (  # noqa: E402
     PPOPriorityTrainer,
@@ -78,7 +78,7 @@ def _build_release_snapshot_cases(
         reservations.insert_batch(
             planner._hold(
                 vehicle,
-                plan_id=f"phase5-idle:{vehicle.vehicle_id}",
+                plan_id=f"training-idle:{vehicle.vehicle_id}",
                 node_id=vehicle.current_node_id or "",
                 start_ms=0,
                 end_ms=end_time_ms,
@@ -104,62 +104,40 @@ def _build_release_snapshot_cases(
             proposals = planner.allocator.assign(
                 list(projections.values()), pending, decision_time_ms
             )
-            if len(proposals) < 2 or len(proposals) > max_candidates:
-                continue
-            observation = encoder.encode(
-                proposals,
-                tasks_by_id,
-                projections,
-                reservations,
-                decision_time_ms,
+            components = planner._conflict_components(
+                proposals, tasks_by_id, projections
             )
-
-            def evaluate(
-                order_indices: tuple[int, ...],
-                *,
-                case_proposals=proposals,
-                case_now_ms=decision_time_ms,
-                case_tasks=tasks_by_id,
-                case_projections=projections,
-                case_reservations=reservations,
-                case_planner=planner,
-                case_end_ms=end_time_ms,
-            ) -> tuple[float, dict[str, Any]]:
-                order = tuple(case_proposals[index] for index in order_indices)
-                outcome = case_planner._evaluate_candidate(
-                    candidate_id="phase5-training",
-                    strategy=PriorityStrategy.RL.value,
-                    order=order,
-                    now_ms=case_now_ms,
-                    end_time_ms=case_end_ms,
-                    tasks_by_id=case_tasks,
-                    base_projections=case_projections,
-                    base_reservations=case_reservations,
-                    plan_counts=Counter(),
+            for component_index, component in enumerate(components):
+                if not 2 <= len(component) <= max_candidates:
+                    continue
+                baseline_order = planner._order_for_strategy(
+                    PriorityStrategy.CONGESTION,
+                    component,
+                    tasks_by_id,
+                    reservations,
+                    projections,
+                    decision_time_ms,
+                    0,
+                    0,
+                    0,
                 )
-                return reward_from_candidate(outcome)
-
-            reference_order = planner._order_for_strategy(
-                PriorityStrategy.CONGESTION,
-                proposals,
-                tasks_by_id,
-                reservations,
-                projections,
-                decision_time_ms,
-                0,
-                0,
-                0,
-            )
-            reference_action = tuple(proposals.index(item) for item in reference_order)
-
-            cases.append(
-                PriorityTrainingCase(
-                    observation=observation,
-                    evaluator=evaluate,
-                    case_id=f"{scenario['scenarioId']}@{decision_time_ms}",
-                    reference_action=reference_action,
+                cases.append(
+                    _make_case_from_context(
+                        planner=planner,
+                        encoder=encoder,
+                        scenario_id=(
+                            f"{scenario['scenarioId']}-component-{component_index}"
+                        ),
+                        end_time_ms=end_time_ms,
+                        proposals=baseline_order,
+                        tasks_by_id=tasks_by_id,
+                        projections=projections,
+                        reservations=reservations,
+                        now_ms=decision_time_ms,
+                        context_index=component_index,
+                        reference_action=tuple(range(len(baseline_order))),
+                    )
                 )
-            )
     if not cases or encoder_config is None:
         raise RuntimeError(
             "no trainable decision state had at least two assigned vehicles"
@@ -234,7 +212,7 @@ def _make_case_from_context(
     ) -> tuple[float, dict[str, Any]]:
         order = tuple(case_proposals[index] for index in order_indices)
         outcome = case_planner._evaluate_candidate(
-            candidate_id="phase5-rolling-training",
+            candidate_id="rolling-training",
             strategy=PriorityStrategy.RL.value,
             order=order,
             now_ms=case_now_ms,
@@ -310,24 +288,18 @@ def _build_rolling_training_cases(
             now_ms = args[4] if len(args) > 4 else kwargs["now_ms"]
             cycle_index = args[5] if len(args) > 5 else kwargs["cycle_index"]
             round_index = args[6] if len(args) > 6 else kwargs["round_index"]
-            captured_context: dict[str, Any] | None = None
-            if 2 <= len(proposals) <= max_candidates:
+            components = planner._conflict_components(
+                proposals, tasks_by_id, projections
+            )
+            for component in components:
+                if not 2 <= len(component) <= max_candidates:
+                    continue
                 frozen_projections, frozen_reservations = _clone_planner_state(
                     planner, projections, reservations
                 )
-                captured_context = {
-                    "proposals": proposals,
-                    "tasks": dict(tasks_by_id),
-                    "projections": frozen_projections,
-                    "reservations": frozen_reservations,
-                    "now_ms": int(now_ms),
-                }
-                captured.append(captured_context)
-            orders = original_priority_orders(*args, **kwargs)
-            if captured_context is not None:
                 baseline_order = planner._order_for_strategy(
                     PriorityStrategy.CONGESTION,
-                    proposals,
+                    component,
                     tasks_by_id,
                     reservations,
                     projections,
@@ -336,11 +308,16 @@ def _build_rolling_training_cases(
                     int(round_index),
                     0,
                 )
-                reference_action = tuple(proposals.index(item) for item in baseline_order)
-                if len(reference_action) == len(proposals) and set(reference_action) == set(
-                    range(len(proposals))
-                ):
-                    captured_context["reference_action"] = reference_action
+                captured_context = {
+                    "proposals": baseline_order,
+                    "tasks": dict(tasks_by_id),
+                    "projections": frozen_projections,
+                    "reservations": frozen_reservations,
+                    "now_ms": int(now_ms),
+                    "reference_action": tuple(range(len(baseline_order))),
+                }
+                captured.append(captured_context)
+            orders = original_priority_orders(*args, **kwargs)
             return orders
 
         planner._priority_orders = capture_priority_orders
@@ -402,6 +379,7 @@ def evaluate_network(
     cases: list[PriorityTrainingCase],
     *,
     device: torch.device,
+    prefix_count: int | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     network.eval()
@@ -420,12 +398,32 @@ def evaluate_network(
             "mask": torch.as_tensor(
                 observation["mask"], dtype=torch.bool, device=device
             ).unsqueeze(0),
+            "conflict_matrix": torch.as_tensor(
+                observation["conflict_matrix"],
+                dtype=torch.bool,
+                device=device,
+            ).unsqueeze(0),
         }
+        active_prefix = min(
+            case.observation.candidate_count,
+            case.observation.candidate_count
+            if prefix_count is None
+            else max(1, int(prefix_count)),
+        )
         with torch.no_grad():
-            action, _, value = network.act(tensor_observation, deterministic=True)
-        order = tuple(
+            action, _, value = network.act(
+                tensor_observation,
+                deterministic=True,
+                max_steps=active_prefix,
+            )
+        prefix = tuple(
             int(item)
-            for item in action[0, : case.observation.candidate_count].tolist()
+            for item in action[0, :active_prefix].tolist()
+        )
+        order = prefix + tuple(
+            index
+            for index in range(case.observation.candidate_count)
+            if index not in set(prefix)
         )
         evaluated = case.evaluator(order)
         reward, info = evaluated if isinstance(evaluated, tuple) else (evaluated, {})
@@ -444,13 +442,13 @@ def evaluate_network(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Train the phase 5 PPO vehicle-priority policy"
+        description="Train the PPO vehicle-priority policy"
     )
     parser.add_argument(
         "scenarios",
         nargs="*",
         type=Path,
-        default=[ROOT / "scenarios/phase3-realistic-multi-fleet-interactive.json"],
+        default=[ROOT / "scenarios/interactive-multi-fleet.json"],
     )
     parser.add_argument("--steps", type=int, default=128)
     parser.add_argument("--rollout-steps", type=int, default=32)
@@ -477,9 +475,15 @@ def main() -> None:
     parser.add_argument("--attention-heads", type=int, default=4)
     parser.add_argument("--transformer-layers", type=int, default=2)
     parser.add_argument("--candidate-count", type=int, default=5)
+    parser.add_argument(
+        "--priority-prefix-count",
+        type=int,
+        default=2,
+        help="number of vehicles learned per local conflict component",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
-        "--output-dir", type=Path, default=ROOT / "runs/phase5-rl-priority"
+        "--output-dir", type=Path, default=ROOT / "runs/priority-policy-training"
     )
     parser.add_argument(
         "--map", type=Path, default=ROOT / "generated/xiate-unified-map-model.json"
@@ -532,7 +536,11 @@ def main() -> None:
             0, len(cases) - 1, num=args.max_training_cases, dtype=np.int64
         )
         cases = [cases[int(index)] for index in indices]
-    env = PriorityOrderEnv(cases, seed=args.seed)
+    env = PriorityOrderEnv(
+        cases,
+        seed=args.seed,
+        prefix_count=args.priority_prefix_count,
+    )
     network = PriorityOrderNetwork(
         max_candidates=args.max_candidates,
         path_token_count=args.path_tokens,
@@ -560,6 +568,7 @@ def main() -> None:
         encoder_config=encoder_config,
         metadata={
             "candidate_count": max(1, args.candidate_count),
+            "priority_prefix_count": max(1, args.priority_prefix_count),
             "training_scenarios": [str(path) for path in scenario_paths],
             "training_steps": args.steps,
             "seed": args.seed,
@@ -569,7 +578,12 @@ def main() -> None:
         },
     )
     evaluation_cases = cases[: max(1, args.evaluation_case_limit)]
-    evaluation = evaluate_network(network, evaluation_cases, device=device)
+    evaluation = evaluate_network(
+        network,
+        evaluation_cases,
+        device=device,
+        prefix_count=args.priority_prefix_count,
+    )
     summary = {
         "schemaVersion": 1,
         "checkpoint": str(checkpoint),
@@ -578,6 +592,7 @@ def main() -> None:
         "evaluationCaseCount": len(evaluation_cases),
         "stateSource": args.state_source,
         "trainingSteps": args.steps,
+        "priorityPrefixCount": max(1, args.priority_prefix_count),
         "seed": args.seed,
         "lastUpdate": metrics[-1],
         "behaviorClone": {
@@ -594,7 +609,7 @@ def main() -> None:
         "trainingMetrics": metrics,
         "evaluation": evaluation,
         "safetyBoundary": (
-            "RL emits priority permutations only; every reward and deployed order "
+            "RL emits local priority prefixes only; every reward and deployed order "
             "is evaluated by the unchanged SIPP/reservation/validator pipeline."
         ),
     }

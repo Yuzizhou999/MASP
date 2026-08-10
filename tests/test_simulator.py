@@ -15,7 +15,7 @@ from conftest import read_json
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def build_phase1(scenario: dict[str, Any]):
+def build_simulator_from_scenario(scenario: dict[str, Any]):
     return build_simulator(
         scenario,
         read_json("generated/xiate-unified-map-model.json"),
@@ -27,10 +27,10 @@ def build_phase1(scenario: dict[str, Any]):
 
 
 def test_single_vehicle_completes_pickup_and_dropoff_deterministically() -> None:
-    scenario = read_json("scenarios/phase1-single-vehicle.json")
+    scenario = read_json("scenarios/explicit-single-vehicle.json")
 
-    first = build_phase1(deepcopy(scenario)).run()
-    second = build_phase1(deepcopy(scenario)).run()
+    first = build_simulator_from_scenario(deepcopy(scenario)).run()
+    second = build_simulator_from_scenario(deepcopy(scenario)).run()
 
     assert first["eventDigestSha256"] == second["eventDigestSha256"]
     assert first["eventLog"] == second["eventLog"]
@@ -43,8 +43,8 @@ def test_single_vehicle_completes_pickup_and_dropoff_deterministically() -> None
 
 
 def test_completion_events_precede_next_segment_entry_at_same_time() -> None:
-    result = build_phase1(
-        read_json("scenarios/phase1-single-vehicle.json")
+    result = build_simulator_from_scenario(
+        read_json("scenarios/explicit-single-vehicle.json")
     ).run()
     at_pickup_completion = [
         row["type"] for row in result["eventLog"] if row["timeMs"] == 16500

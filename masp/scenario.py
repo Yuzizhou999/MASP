@@ -8,8 +8,8 @@ from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
 from .domain import DomainError, TransportTask, Vehicle, VehiclePlan
-from .phase2 import Phase2Planner, Phase2PlanningResult
-from .phase3 import Phase3PlanningResult, RollingHorizonPlanner
+from .planning import TaskPlanner, PlanningResult
+from .coordination import DispatchPlanningResult, RollingHorizonPlanner
 from .simulator import DeterministicSimulator
 from .topology import MapTopology
 
@@ -46,12 +46,12 @@ def validate_scenario_document(
         )
 
 
-def validate_phase2_scenario_document(
+def validate_planning_scenario_document(
     scenario: dict[str, Any],
     schemas_dir: Path,
 ) -> None:
     task_schema = load_json(schemas_dir / "task.schema.json")
-    scenario_schema = load_json(schemas_dir / "phase2-scenario.schema.json")
+    scenario_schema = load_json(schemas_dir / "planning-scenario.schema.json")
     registry = Registry().with_resource(
         task_schema["$id"], Resource.from_contents(task_schema)
     )
@@ -66,16 +66,16 @@ def validate_phase2_scenario_document(
             for part in error.absolute_path
         )
         raise DomainError(
-            "phase2.scenario.schema.invalid", f"scenario {path}: {error.message}"
+            "planning.scenario.schema.invalid", f"scenario {path}: {error.message}"
         )
 
 
-def validate_phase3_scenario_document(
+def validate_dispatch_scenario_document(
     scenario: dict[str, Any],
     schemas_dir: Path,
 ) -> None:
     task_schema = load_json(schemas_dir / "task.schema.json")
-    scenario_schema = load_json(schemas_dir / "phase3-scenario.schema.json")
+    scenario_schema = load_json(schemas_dir / "dispatch-scenario.schema.json")
     registry = Registry().with_resource(
         task_schema["$id"], Resource.from_contents(task_schema)
     )
@@ -90,7 +90,7 @@ def validate_phase3_scenario_document(
             for part in error.absolute_path
         )
         raise DomainError(
-            "phase3.scenario.schema.invalid", f"scenario {path}: {error.message}"
+            "coordination.scenario.schema.invalid", f"scenario {path}: {error.message}"
         )
 
 
@@ -123,7 +123,7 @@ def build_simulator(
     )
 
 
-def build_phase2_plans(
+def build_plans(
     scenario: dict[str, Any],
     model: dict[str, Any],
     conflicts: dict[str, Any],
@@ -132,8 +132,8 @@ def build_phase2_plans(
     scheduler: dict[str, Any],
     traffic_zones: dict[str, Any],
     schemas_dir: Path,
-) -> tuple[Phase2PlanningResult, dict[str, Any]]:
-    validate_phase2_scenario_document(scenario, schemas_dir)
+) -> tuple[PlanningResult, dict[str, Any]]:
+    validate_planning_scenario_document(scenario, schemas_dir)
     defaults = scheduler["serviceDefaults"]
     vehicles = [Vehicle.from_dict(item) for item in scenario["vehicles"]]
     tasks = [
@@ -145,7 +145,7 @@ def build_phase2_plans(
         for item in scenario["tasks"]
     ]
     topology = MapTopology(model, conflicts, workstations, traffic_zones)
-    planning = Phase2Planner(
+    planning = TaskPlanner(
         topology, model, profiles, scheduler, traffic_zones
     ).plan(vehicles, tasks, int(scenario["endTimeMs"]))
     planned_scenario = {
@@ -161,7 +161,7 @@ def build_phase2_plans(
     return planning, planned_scenario
 
 
-def build_phase3_plans(
+def build_dispatch_plans(
     scenario: dict[str, Any],
     model: dict[str, Any],
     conflicts: dict[str, Any],
@@ -177,8 +177,8 @@ def build_phase3_plans(
     rl_checkpoint: str | Path | None = None,
     rl_candidate_count: int | None = None,
     rl_allow_deviation: bool = False,
-) -> tuple[Phase3PlanningResult, dict[str, Any]]:
-    validate_phase3_scenario_document(scenario, schemas_dir)
+) -> tuple[DispatchPlanningResult, dict[str, Any]]:
+    validate_dispatch_scenario_document(scenario, schemas_dir)
     defaults = scheduler["serviceDefaults"]
     vehicles = [Vehicle.from_dict(item) for item in scenario["vehicles"]]
     tasks = [

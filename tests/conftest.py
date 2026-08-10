@@ -17,7 +17,7 @@ def read_json(relative_path: str) -> dict[str, Any]:
 
 
 @pytest.fixture(scope="session")
-def phase0_assets() -> dict[str, dict[str, Any]]:
+def repository_assets() -> dict[str, dict[str, Any]]:
     return {
         "model": read_json("generated/xiate-unified-map-model.json"),
         "conflicts": read_json("generated/xiate-conflict-resources.json"),

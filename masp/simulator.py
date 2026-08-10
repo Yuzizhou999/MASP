@@ -73,7 +73,7 @@ class DeterministicSimulator:
             if task.state is not TaskState.QUEUED or task.assigned_vehicle_id is not None:
                 raise DomainError(
                     "scenario.task.initial_state",
-                    "phase 1 tasks must enter in QUEUED state without an assigned vehicle",
+                    "simulation tasks must enter in QUEUED state without an assigned vehicle",
                 )
             self.topology.validate_task(task)
             self.event_queue.schedule(

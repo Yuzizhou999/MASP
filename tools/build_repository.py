@@ -7,11 +7,11 @@ from typing import Any
 
 from build_runtime_assets import build_workstations, write_json
 from build_unified_map_model import build_unified_model, load_model
-from validate_phase0 import validate_repository
+from validate_repository import validate_repository
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build and validate MASP phase 0 runtime models")
+    parser = argparse.ArgumentParser(description="Build and validate MASP runtime assets")
     parser.add_argument("--fork", type=Path, default=Path("generated/xiate-fork-map-model.json"))
     parser.add_argument("--jack", type=Path, default=Path("generated/xiate-jack-map-model.json"))
     parser.add_argument("--unified-output", type=Path, default=Path("generated/xiate-unified-map-model.json"))

@@ -63,6 +63,20 @@ def test_conflicting_batch_is_rejected_without_partial_insert() -> None:
     assert table.conflict_rejections == 1
 
 
+def test_clone_preserves_snapshot_and_mutates_independently() -> None:
+    table = ReservationTable()
+    table.insert_batch([reservation("r1", "vehicle-1", 0, 100)])
+    table.conflict_rejections = 3
+
+    cloned = table.clone()
+    cloned.insert_batch([reservation("r2", "vehicle-2", 100, 200)])
+
+    assert table.snapshot() == (reservation("r1", "vehicle-1", 0, 100),)
+    assert len(cloned.snapshot()) == 2
+    assert cloned.version == table.version + 1
+    assert cloned.conflict_rejections == table.conflict_rejections
+
+
 def test_tentative_plan_can_be_committed_and_removed_by_policy() -> None:
     table = ReservationTable()
     table.insert_batch([reservation("r1", "vehicle-1", 0, 100, committed=False)])

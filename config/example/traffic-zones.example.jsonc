@@ -22,7 +22,7 @@
     {"nodeId": "jack:CP50", "allowedRobotGroups": ["jack"]}
   ],
 
-  // 阶段 4 MVP 只支持 capacity=1、禁止会车、同一时刻单方向通行的区域。
+  // The reference runtime supports capacity=1, no passing, and one-way-at-a-time zones.
   "zones": [
     {
       "id": "zone-jack-pp363-pp365",              // PP363 与 PP365 之间的真实窄路。

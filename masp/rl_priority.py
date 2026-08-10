@@ -32,13 +32,18 @@ class EncodedPriorityObservation:
     mask: np.ndarray
     vehicle_ids: tuple[str, ...]
     task_ids: tuple[str, ...]
+    conflict_matrix: np.ndarray | None = None
 
     def as_dict(self) -> dict[str, np.ndarray]:
+        conflict_matrix = self.conflict_matrix
+        if conflict_matrix is None:
+            conflict_matrix = np.diag(self.mask.astype(np.int8))
         return {
             "agent_features": self.agent_features,
             "path_tokens": self.path_tokens,
             "path_mask": self.path_mask,
             "mask": self.mask,
+            "conflict_matrix": conflict_matrix,
         }
 
     @property
@@ -116,8 +121,12 @@ class PriorityObservationEncoder:
             (self.max_candidates, self.path_token_count), dtype=np.int8
         )
         mask = np.zeros((self.max_candidates,), dtype=np.int8)
+        conflict_matrix = np.zeros(
+            (self.max_candidates, self.max_candidates), dtype=np.int8
+        )
         vehicle_ids: list[str] = []
         task_ids: list[str] = []
+        candidate_resources: list[set[str]] = []
         ages = priority_age_ms or {}
         snapshot = reservations.snapshot()
 
@@ -131,6 +140,16 @@ class PriorityObservationEncoder:
                 for edge_id in edge_ids
             ]
             resources = self._route_resources(item[0] for item in flattened_edges)
+            for node_id in (task.pickup_node_id, task.dropoff_node_id):
+                station = self.topology.workstations.get(node_id)
+                if station is not None:
+                    resources.add(f"workstation:{station.station_id}")
+                    if station.blocks_transit_during_service:
+                        resources.add(f"node:{node_id}")
+                resources.update(
+                    self.topology.traffic_zones.resource_ids_for_node(node_id)
+                )
+            candidate_resources.append(resources)
             occupied_ms, blocking_vehicles = self._reservation_pressure(
                 resources, snapshot, now_ms, vehicle.vehicle_id
             )
@@ -155,6 +174,13 @@ class PriorityObservationEncoder:
             vehicle_ids.append(vehicle.vehicle_id)
             task_ids.append(task.task_id)
 
+        for left, left_resources in enumerate(candidate_resources):
+            conflict_matrix[left, left] = 1
+            for right in range(left + 1, len(candidate_resources)):
+                if left_resources & candidate_resources[right]:
+                    conflict_matrix[left, right] = 1
+                    conflict_matrix[right, left] = 1
+
         return EncodedPriorityObservation(
             agent_features=features,
             path_tokens=tokens,
@@ -162,6 +188,7 @@ class PriorityObservationEncoder:
             mask=mask,
             vehicle_ids=tuple(vehicle_ids),
             task_ids=tuple(task_ids),
+            conflict_matrix=conflict_matrix,
         )
 
     def _routes_for(
@@ -196,6 +223,12 @@ class PriorityObservationEncoder:
                 continue
             resources.add(edge_resource["ownResource"])
             resources.update(edge_resource["conflictResources"])
+            edge = self.routes.edges[edge_id]
+            resources.add(f"node:{edge['start']}")
+            resources.add(f"node:{edge['end']}")
+            resources.update(
+                self.topology.traffic_zones.resource_ids_for_edge(edge_id)
+            )
         return resources
 
     def _reservation_pressure(
@@ -370,6 +403,7 @@ class PriorityOrderNetwork(nn.Module):
         path_tokens: torch.Tensor,
         path_mask: torch.Tensor,
         mask: torch.Tensor,
+        conflict_matrix: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         mask = mask.bool()
         path_mask = path_mask.bool()
@@ -389,6 +423,18 @@ class PriorityOrderNetwork(nn.Module):
         fused = self.fusion(
             torch.cat((self.agent_projection(agent_features), path_summary), dim=-1)
         )
+        if conflict_matrix is not None:
+            adjacency = conflict_matrix.to(fused.dtype)
+            valid_pairs = mask.unsqueeze(1) & mask.unsqueeze(2)
+            adjacency = adjacency * valid_pairs.to(adjacency.dtype)
+            identity = torch.eye(
+                candidates, dtype=adjacency.dtype, device=adjacency.device
+            ).unsqueeze(0)
+            adjacency = torch.maximum(adjacency, identity * mask.unsqueeze(1))
+            graph_message = torch.bmm(adjacency, fused) / adjacency.sum(
+                dim=-1, keepdim=True
+            ).clamp_min(1.0)
+            fused = 0.5 * (fused + graph_message)
         memory = self.spatial_encoder(fused, src_key_padding_mask=~mask)
         mask_weights = mask.to(memory.dtype).unsqueeze(-1)
         context = (memory * mask_weights).sum(dim=1) / mask_weights.sum(dim=1).clamp_min(1.0)
@@ -402,6 +448,7 @@ class PriorityOrderNetwork(nn.Module):
         *,
         actions: torch.Tensor | None,
         deterministic: bool,
+        max_steps: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         mask = mask.bool()
         batch, candidates, hidden = memory.shape
@@ -416,7 +463,8 @@ class PriorityOrderNetwork(nn.Module):
         decoder_input = self.start_token.unsqueeze(0).expand(batch, hidden)
         keys = self.pointer_key(memory)
 
-        for step in range(candidates):
+        step_count = candidates if max_steps is None else min(candidates, max(1, max_steps))
+        for step in range(step_count):
             active = counts > step
             if not bool(active.any()):
                 break
@@ -451,6 +499,7 @@ class PriorityOrderNetwork(nn.Module):
         observation: dict[str, torch.Tensor],
         *,
         deterministic: bool = False,
+        max_steps: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         memory, context = self._encode(**observation)
         sequence, log_prob, _ = self._decode(
@@ -459,6 +508,7 @@ class PriorityOrderNetwork(nn.Module):
             observation["mask"],
             actions=None,
             deterministic=deterministic,
+            max_steps=max_steps,
         )
         return sequence, log_prob, self.value_head(context).squeeze(-1)
 
@@ -466,6 +516,8 @@ class PriorityOrderNetwork(nn.Module):
         self,
         observation: dict[str, torch.Tensor],
         actions: torch.Tensor,
+        *,
+        max_steps: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         memory, context = self._encode(**observation)
         _, log_prob, entropy = self._decode(
@@ -474,6 +526,7 @@ class PriorityOrderNetwork(nn.Module):
             observation["mask"],
             actions=actions,
             deterministic=False,
+            max_steps=max_steps,
         )
         return log_prob, entropy, self.value_head(context).squeeze(-1)
 
@@ -490,11 +543,17 @@ class PriorityTrainingCase:
 
 
 class PriorityOrderEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
-    """A Gymnasium contextual-bandit environment backed by safe SIPP evaluation."""
+    """A safe evaluator for a learned local priority prefix."""
 
     metadata = {"render_modes": []}
 
-    def __init__(self, cases: Sequence[PriorityTrainingCase], *, seed: int = 0) -> None:
+    def __init__(
+        self,
+        cases: Sequence[PriorityTrainingCase],
+        *,
+        seed: int = 0,
+        prefix_count: int | None = None,
+    ) -> None:
         super().__init__()
         if not cases:
             raise ValueError("PriorityOrderEnv needs at least one training case")
@@ -521,12 +580,20 @@ class PriorityOrderEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
                 ),
                 "path_mask": spaces.MultiBinary(first.path_mask.shape),
                 "mask": spaces.MultiBinary(first.mask.shape),
+                "conflict_matrix": spaces.MultiBinary(
+                    first.as_dict()["conflict_matrix"].shape
+                ),
             }
         )
         self.action_space = spaces.MultiDiscrete(
             np.full(max_candidates, max_candidates, dtype=np.int64)
         )
         self._seed = int(seed)
+        self.prefix_count = (
+            max_candidates
+            if prefix_count is None
+            else max(1, min(max_candidates, int(prefix_count)))
+        )
         self._current: PriorityTrainingCase | None = None
 
     def reset(
@@ -552,17 +619,26 @@ class PriorityOrderEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
             raise RuntimeError("reset() must be called before step()")
         action = np.asarray(action, dtype=np.int64).reshape(-1)
         count = self._current.observation.candidate_count
-        order = tuple(int(value) for value in action[:count])
-        if len(order) != count or set(order) != set(range(count)):
+        prefix_count = min(count, self.prefix_count)
+        prefix = tuple(int(value) for value in action[:prefix_count])
+        if (
+            len(prefix) != prefix_count
+            or len(set(prefix)) != prefix_count
+            or any(value < 0 or value >= count for value in prefix)
+        ):
             reward = -100.0
             info: dict[str, Any] = {"invalidPermutation": True}
         else:
+            order = prefix + tuple(
+                index for index in range(count) if index not in set(prefix)
+            )
             evaluated = self._current.evaluator(order)
             if isinstance(evaluated, tuple):
                 reward, info = float(evaluated[0]), dict(evaluated[1])
             else:
                 reward, info = float(evaluated), {}
             info["invalidPermutation"] = False
+            info["priorityPrefixCount"] = prefix_count
         observation = self._current.observation.as_dict()
         info["caseId"] = self._current.case_id
         self._current = None
@@ -583,6 +659,14 @@ def _tensor_observation(
             observation["path_mask"], dtype=torch.bool, device=device
         ),
         "mask": torch.as_tensor(observation["mask"], dtype=torch.bool, device=device),
+        "conflict_matrix": torch.as_tensor(
+            observation.get(
+                "conflict_matrix",
+                np.diag(np.asarray(observation["mask"], dtype=np.int8)),
+            ),
+            dtype=torch.bool,
+            device=device,
+        ),
     }
 
 
@@ -654,7 +738,9 @@ class PPOPriorityTrainer:
                         reference, dtype=torch.long, device=self.device
                     )
                 log_prob, _, _ = self.network.evaluate_actions(
-                    batch_observation, actions
+                    batch_observation,
+                    actions,
+                    max_steps=getattr(getattr(self, "env", None), "prefix_count", None),
                 )
                 loss = -log_prob.mean()
                 optimizer.zero_grad(set_to_none=True)
@@ -698,7 +784,9 @@ class PPOPriorityTrainer:
                     ).items()
                 }
                 with torch.no_grad():
-                    action, log_prob, value = self.network.act(tensor_obs)
+                    action, log_prob, value = self.network.act(
+                        tensor_obs, max_steps=self.env.prefix_count
+                    )
                 action_np = action[0].cpu().numpy()
                 _, reward, _, _, _ = self.env.step(action_np)
                 observations.append(observation)
@@ -747,7 +835,9 @@ class PPOPriorityTrainer:
                         for key, value in batch_observation.items()
                     }
                     log_prob, entropy, predicted = self.network.evaluate_actions(
-                        obs, batch_actions.index_select(0, selected)
+                        obs,
+                        batch_actions.index_select(0, selected),
+                        max_steps=self.env.prefix_count,
                     )
                     old = batch_old_log_probs.index_select(0, selected)
                     advantage = advantages.index_select(0, selected)
@@ -831,6 +921,7 @@ class RLPriorityPolicy:
         *,
         device: str | torch.device = "cpu",
         candidate_count: int = 1,
+        prefix_count: int | None = None,
         seed: int = 0,
         torch_threads: int | None = None,
     ) -> None:
@@ -845,6 +936,9 @@ class RLPriorityPolicy:
                 torch.set_num_threads(int(configured_threads))
         self.network.to(self.device).eval()
         self.candidate_count = max(1, int(candidate_count))
+        self.prefix_count = (
+            None if prefix_count is None else max(1, int(prefix_count))
+        )
         self.seed = int(seed)
         self._call_count = 0
 
@@ -858,6 +952,7 @@ class RLPriorityPolicy:
         planning_horizon_ms: int,
         device: str | torch.device = "cpu",
         candidate_count: int | None = None,
+        prefix_count: int | None = None,
         seed: int = 0,
     ) -> RLPriorityPolicy:
         payload = load_checkpoint(path, device=device)
@@ -872,12 +967,16 @@ class RLPriorityPolicy:
             path_token_count=int(encoder_config["path_token_count"]),
         )
         checkpoint_candidates = int(payload.get("metadata", {}).get("candidate_count", 1))
+        checkpoint_prefix = payload.get("metadata", {}).get("priority_prefix_count")
         return cls(
             network,
             encoder,
             device=device,
             candidate_count=(
                 checkpoint_candidates if candidate_count is None else candidate_count
+            ),
+            prefix_count=(
+                checkpoint_prefix if prefix_count is None else prefix_count
             ),
             seed=seed,
         )
@@ -892,6 +991,7 @@ class RLPriorityPolicy:
         now_ms: int,
         priority_age_ms: dict[str, int] | None = None,
         count: int | None = None,
+        prefix_count: int | None = None,
     ) -> tuple[tuple[AssignmentProposal, ...], ...]:
         proposals = tuple(proposals)
         if len(proposals) <= 1:
@@ -911,6 +1011,19 @@ class RLPriorityPolicy:
             ).items()
         }
         requested = max(1, int(self.candidate_count if count is None else count))
+        requested_prefix = min(
+            len(proposals),
+            max(
+                1,
+                int(
+                    len(proposals)
+                    if prefix_count is None and self.prefix_count is None
+                    else (
+                        self.prefix_count if prefix_count is None else prefix_count
+                    )
+                ),
+            ),
+        )
         generated: list[tuple[AssignmentProposal, ...]] = []
         signatures: set[tuple[tuple[str, str], ...]] = set()
         devices = [] if self.device.type == "cpu" else [self.device.index or 0]
@@ -918,11 +1031,27 @@ class RLPriorityPolicy:
             torch.manual_seed(self.seed + self._call_count * 104729)
             for index in range(max(requested * 5, 1)):
                 action, _, _ = self.network.act(
-                    tensor_obs, deterministic=(index == 0)
+                    tensor_obs,
+                    deterministic=(index == 0),
+                    max_steps=requested_prefix,
+                )
+                prefix_indices = tuple(
+                    int(value)
+                    for value in action[0, :requested_prefix].tolist()
+                )
+                if (
+                    len(set(prefix_indices)) != requested_prefix
+                    or any(value < 0 or value >= len(proposals) for value in prefix_indices)
+                ):
+                    continue
+                remaining_indices = tuple(
+                    value
+                    for value in range(len(proposals))
+                    if value not in set(prefix_indices)
                 )
                 order = tuple(
-                    proposals[int(value)]
-                    for value in action[0, : len(proposals)].tolist()
+                    proposals[value]
+                    for value in prefix_indices + remaining_indices
                 )
                 signature = tuple((item.vehicle_id, item.task_id) for item in order)
                 if signature in signatures:
@@ -941,11 +1070,18 @@ def reward_from_candidate(outcome: Any) -> tuple[float, dict[str, Any]]:
     """Dense PPO reward derived only after the safe candidate evaluator runs."""
 
     record = outcome.record
+    schedule_attempts = sum(item.schedule_attempts for item in outcome.records)
+    route_combinations = sum(
+        item.route_combinations_tried for item in outcome.records
+    )
+    computation_penalty = 0.02 * schedule_attempts + 0.05 * route_combinations
     if not record.feasible or record.score is None:
         missing = max(0, len(record.order) - int(record.planned_task_count))
-        return -20.0 - 5.0 * missing, {
+        return -20.0 - 5.0 * missing - computation_penalty, {
             "feasible": False,
             "failureCode": record.failure_code,
+            "scheduleAttempts": schedule_attempts,
+            "routeCombinationsTried": route_combinations,
         }
     score = record.score
     reward = (
@@ -957,11 +1093,14 @@ def reward_from_candidate(outcome: Any) -> tuple[float, dict[str, Any]]:
         - score.wait_ms / 20_000.0
         - score.empty_travel_ms / 100_000.0
         - score.completion_time_sum_ms / 1_000_000.0
+        - computation_penalty
     )
     return float(reward), {
         "feasible": True,
         "plannedTaskCount": record.planned_task_count,
         "score": score.to_dict(),
+        "scheduleAttempts": schedule_attempts,
+        "routeCombinationsTried": route_combinations,
     }
 
 

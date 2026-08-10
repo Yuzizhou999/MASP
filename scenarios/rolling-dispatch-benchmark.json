@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenarioId": "phase3-rh-pp-benchmark",
+  "scenarioId": "rolling-dispatch-benchmark",
   "seed": 0,
   "endTimeMs": 500000,
   "vehicles": [
@@ -28,57 +28,57 @@
   ],
   "tasks": [
     {
-      "taskId": "phase3-task-001",
+      "taskId": "benchmark-task-001",
       "releaseTimeMs": 0,
       "pickupNodeId": "fork:AP1123",
       "dropoffNodeId": "fork:AP2121",
       "requiredRobotGroup": "fork",
       "payloadType": "pallet",
-      "payloadId": "phase3-pallet-001",
+      "payloadId": "benchmark-pallet-001",
       "priorityClass": 1,
       "dueTimeMs": 140000
     },
     {
-      "taskId": "phase3-task-002",
+      "taskId": "benchmark-task-002",
       "releaseTimeMs": 0,
       "pickupNodeId": "fork:AP1119",
       "dropoffNodeId": "fork:AP1126",
       "requiredRobotGroup": "fork",
       "payloadType": "pallet",
-      "payloadId": "phase3-pallet-002",
+      "payloadId": "benchmark-pallet-002",
       "priorityClass": 0,
       "dueTimeMs": 140000
     },
     {
-      "taskId": "phase3-task-003",
+      "taskId": "benchmark-task-003",
       "releaseTimeMs": 0,
       "pickupNodeId": "fork:AP1113",
       "dropoffNodeId": "fork:AP1116",
       "requiredRobotGroup": "fork",
       "payloadType": "pallet",
-      "payloadId": "phase3-pallet-003",
+      "payloadId": "benchmark-pallet-003",
       "priorityClass": 2,
       "dueTimeMs": 140000
     },
     {
-      "taskId": "phase3-task-004",
+      "taskId": "benchmark-task-004",
       "releaseTimeMs": 90000,
       "pickupNodeId": "fork:AP1123",
       "dropoffNodeId": "fork:AP1126",
       "requiredRobotGroup": "fork",
       "payloadType": "pallet",
-      "payloadId": "phase3-pallet-004",
+      "payloadId": "benchmark-pallet-004",
       "priorityClass": 1,
       "dueTimeMs": 300000
     },
     {
-      "taskId": "phase3-task-005",
+      "taskId": "benchmark-task-005",
       "releaseTimeMs": 90000,
       "pickupNodeId": "fork:AP1119",
       "dropoffNodeId": "fork:AP2121",
       "requiredRobotGroup": "fork",
       "payloadType": "pallet",
-      "payloadId": "phase3-pallet-005",
+      "payloadId": "benchmark-pallet-005",
       "priorityClass": 0,
       "dueTimeMs": 300000
     }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://masp.local/schemas/simulation-scenario.schema.json",
-  "title": "MASP phase 1 deterministic simulation scenario",
-  "description": "阶段 1 确定性仿真输入，包含参与车辆、持续任务和预先给定的执行计划。",
+  "title": "MASP deterministic simulation scenario",
+  "description": "Deterministic simulation input containing vehicles, tasks and explicit execution plans.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "scenarioId", "seed", "endTimeMs", "vehicles", "tasks", "plans"],

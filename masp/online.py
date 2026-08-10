@@ -14,10 +14,10 @@ from .domain import (
     VehiclePlan,
     VehicleState,
 )
-from .phase2 import PlanningRecord
-from .phase3 import (
-    Phase3CycleProposal,
-    Phase3PlanningResult,
+from .planning import PlanningRecord
+from .coordination import (
+    DispatchCycleProposal,
+    DispatchPlanningResult,
     RollingCycleRecord,
     RollingHorizonPlanner,
 )
@@ -90,6 +90,10 @@ class OnlineDispatchRuntime:
         *,
         policy: str | None = None,
         seed: int = 0,
+        priority_policy: Any | None = None,
+        rl_checkpoint: str | None = None,
+        rl_candidate_count: int | None = None,
+        rl_allow_deviation: bool = False,
     ) -> None:
         vehicle_rows = list(vehicles)
         self.topology = topology
@@ -115,6 +119,10 @@ class OnlineDispatchRuntime:
             traffic_zones,
             policy=policy,
             seed=seed,
+            priority_policy=priority_policy,
+            rl_checkpoint=rl_checkpoint,
+            rl_candidate_count=rl_candidate_count,
+            rl_allow_deviation=rl_allow_deviation,
         )
         self.simulator = DeterministicSimulator(
             topology=topology,
@@ -185,7 +193,7 @@ class OnlineDispatchRuntime:
             and task.state is TaskState.QUEUED
             and task.assigned_vehicle_id is None
         ]
-        planned: Phase3CycleProposal = self.planner.plan_cycle(
+        planned: DispatchCycleProposal = self.planner.plan_cycle(
             vehicles,
             tasks,
             self.now_ms,
@@ -204,7 +212,12 @@ class OnlineDispatchRuntime:
         for candidate in planned.cycle.candidates:
             if not candidate.feasible and candidate.failure_pair is not None:
                 self.pair_retry_until[candidate.failure_pair] = (
-                    self.now_ms + self.planner.planning_horizon_ms
+                    self.now_ms
+                    + (
+                        self.planner.planning_period_ms
+                        if candidate.timed_out
+                        else self.planner.planning_horizon_ms
+                    )
                 )
         commitments = {
             (item.vehicle_id, item.task_id): item
@@ -362,7 +375,7 @@ class OnlineDispatchRuntime:
         self.telemetry_update_count += 1
         return True
 
-    def planning_result(self) -> Phase3PlanningResult:
+    def planning_result(self) -> DispatchPlanningResult:
         unplanned = tuple(
             sorted(
                 task.task_id
@@ -370,7 +383,7 @@ class OnlineDispatchRuntime:
                 if task.state not in {TaskState.COMPLETED, TaskState.CANCELLED}
             )
         )
-        return Phase3PlanningResult(
+        return DispatchPlanningResult(
             policy=self.planner.policy,
             plans=tuple(self.accepted_plans),
             records=tuple(self.records),
@@ -456,6 +469,10 @@ def run_online_scenario(
     *,
     policy: str | None = None,
     seed: int | None = None,
+    priority_policy: Any | None = None,
+    rl_checkpoint: str | None = None,
+    rl_candidate_count: int | None = None,
+    rl_allow_deviation: bool = False,
 ) -> OnlineDispatchRuntime:
     defaults = scheduler["serviceDefaults"]
     task_rows = sorted(
@@ -472,6 +489,10 @@ def run_online_scenario(
         end_time_ms=int(scenario["endTimeMs"]),
         policy=policy,
         seed=int(scenario["seed"] if seed is None else seed),
+        priority_policy=priority_policy,
+        rl_checkpoint=rl_checkpoint,
+        rl_candidate_count=rl_candidate_count,
+        rl_allow_deviation=rl_allow_deviation,
     )
     planning_period_ms = int(scheduler["planner"]["planningPeriodMs"])
     next_cycle_ms = 0

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenarioId": "phase3-realistic-multi-fleet-interactive",
+  "scenarioId": "interactive-multi-fleet",
   "seed": 0,
   "endTimeMs": 500000,
   "vehicles": [

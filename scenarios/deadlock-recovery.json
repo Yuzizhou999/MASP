@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenarioId": "phase4-deadlock-recovery",
+  "scenarioId": "deadlock-recovery",
   "seed": 0,
   "nowMs": 10000,
   "endTimeMs": 50000,

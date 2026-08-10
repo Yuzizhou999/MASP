@@ -23,7 +23,7 @@ def read_json(relative_path: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("schema_path,instance_path", SCHEMA_CASES)
-def test_phase0_documents_match_their_schemas(
+def test_repository_documents_match_their_schemas(
     schema_path: str,
     instance_path: str,
 ) -> None:

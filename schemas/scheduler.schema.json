@@ -63,7 +63,11 @@
         "planningHorizonMs",
         "executionHorizonMs",
         "planningTimeoutMs",
+        "planningDeadlineGuardMs",
         "candidateRouteCount",
+        "progressiveRouteSearch",
+        "routeExpansionWaitThresholdMs",
+        "routeBranchAndBound",
         "timeQuantumMs",
         "maxSippScheduleAttempts",
         "provisional"
@@ -73,7 +77,11 @@
         "planningHorizonMs": {"type": "integer", "minimum": 1},
         "executionHorizonMs": {"type": "integer", "minimum": 1},
         "planningTimeoutMs": {"type": "integer", "minimum": 1},
+        "planningDeadlineGuardMs": {"type": "integer", "minimum": 0},
         "candidateRouteCount": {"type": "integer", "minimum": 1, "maximum": 20},
+        "progressiveRouteSearch": {"const": true},
+        "routeExpansionWaitThresholdMs": {"type": "integer", "minimum": 0},
+        "routeBranchAndBound": {"const": true},
         "timeQuantumMs": {"type": "integer", "minimum": 1},
         "maxSippScheduleAttempts": {"type": "integer", "minimum": 1},
         "provisional": {"type": "boolean"}
@@ -101,6 +109,9 @@
       "required": [
         "defaultPolicy",
         "priorityCandidateCount",
+        "localConflictPlanning",
+        "conflictRouteLookaheadCount",
+        "rlPriorityPrefixCount",
         "priorityStrategies",
         "benchmarkRandomSeeds"
       ],
@@ -112,10 +123,22 @@
             "shortest_remaining",
             "congestion",
             "previous_order",
-            "random"
+            "random",
+            "rl"
           ]
         },
         "priorityCandidateCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "localConflictPlanning": {"const": true},
+        "conflictRouteLookaheadCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "rlPriorityPrefixCount": {
           "type": "integer",
           "minimum": 1,
           "maximum": 20

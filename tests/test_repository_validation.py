@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from tools.validate_phase0 import validate_repository, validate_task
+from tools.validate_repository import validate_repository, validate_task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,10 +28,10 @@ def error_codes(issues: list[Any]) -> set[str]:
     return {issue.code for issue in issues if issue.severity == "error"}
 
 
-def test_phase0_repository_is_valid_for_simulation(
-    phase0_assets: dict[str, dict[str, Any]],
+def test_repository_repository_is_valid_for_simulation(
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
-    issues, stats = validate(phase0_assets)
+    issues, stats = validate(repository_assets)
 
     assert error_codes(issues) == set()
     assert {issue.code for issue in issues if issue.severity == "warning"} == {
@@ -49,9 +49,9 @@ def test_phase0_repository_is_valid_for_simulation(
 
 
 def test_real_mode_is_blocked_until_safety_values_are_finalized(
-    phase0_assets: dict[str, dict[str, Any]],
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
-    assets = deepcopy(phase0_assets)
+    assets = deepcopy(repository_assets)
     assets["scheduler"]["mode"] = "real"
 
     issues, _ = validate(assets)
@@ -60,11 +60,11 @@ def test_real_mode_is_blocked_until_safety_values_are_finalized(
 
 
 def test_fleet_counts_and_initial_positions_match_configuration(
-    phase0_assets: dict[str, dict[str, Any]],
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
-    scheduler = phase0_assets["scheduler"]
-    vehicles = phase0_assets["vehicles"]["vehicles"]
-    nodes = {node["id"]: node for node in phase0_assets["model"]["nodes"]}
+    scheduler = repository_assets["scheduler"]
+    vehicles = repository_assets["vehicles"]["vehicles"]
+    nodes = {node["id"]: node for node in repository_assets["model"]["nodes"]}
 
     assert Counter(vehicle["robotGroup"] for vehicle in vehicles) == Counter(
         scheduler["fleet"]["counts"]
@@ -78,9 +78,9 @@ def test_fleet_counts_and_initial_positions_match_configuration(
 
 
 def test_dynamic_fleet_and_long_term_waiting_are_rejected(
-    phase0_assets: dict[str, dict[str, Any]],
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
-    assets = deepcopy(phase0_assets)
+    assets = deepcopy(repository_assets)
     assets["scheduler"]["fleet"]["fixedDuringRun"] = False
     assets["vehicles"]["fixedDuringRun"] = False
     assets["scheduler"]["traffic"]["wait"]["shortTermOnly"] = False
@@ -92,24 +92,24 @@ def test_dynamic_fleet_and_long_term_waiting_are_rejected(
 
 
 def test_workstations_cover_every_ap_and_block_during_service(
-    phase0_assets: dict[str, dict[str, Any]],
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
     ap_ids = {
         node["id"]
-        for node in phase0_assets["model"]["nodes"]
+        for node in repository_assets["model"]["nodes"]
         if node["type"] == "AP"
     }
-    stations = phase0_assets["workstations"]["workstations"]
+    stations = repository_assets["workstations"]["workstations"]
 
     assert {station["nodeId"] for station in stations} == ap_ids
     assert all(station["blocksTransitDuringService"] is True for station in stations)
 
-    assets = deepcopy(phase0_assets)
+    assets = deepcopy(repository_assets)
     assets["workstations"]["workstations"].pop()
     issues, _ = validate(assets)
     assert "workstations.coverage" in error_codes(issues)
 
-    assets = deepcopy(phase0_assets)
+    assets = deepcopy(repository_assets)
     assets["workstations"]["workstations"].append(
         deepcopy(assets["workstations"]["workstations"][0])
     )
@@ -119,9 +119,9 @@ def test_workstations_cover_every_ap_and_block_during_service(
 
 
 def test_traffic_zone_must_classify_every_physical_boundary_edge(
-    phase0_assets: dict[str, dict[str, Any]],
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
-    assets = deepcopy(phase0_assets)
+    assets = deepcopy(repository_assets)
     assets["traffic_zones"]["zones"][0]["entryEdgeIds"].remove("fork:edge-30")
 
     issues, _ = validate(assets)
@@ -130,10 +130,10 @@ def test_traffic_zone_must_classify_every_physical_boundary_edge(
 
 
 def test_traffic_zones_cannot_share_any_controlled_edge(
-    phase0_assets: dict[str, dict[str, Any]],
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
     for field in ("memberEdgeIds", "entryEdgeIds", "exitEdgeIds"):
-        assets = deepcopy(phase0_assets)
+        assets = deepcopy(repository_assets)
         existing_zone = assets["traffic_zones"]["zones"][0]
         overlapping_zone = deepcopy(existing_zone)
         overlapping_zone["id"] = f"overlap-{field}"
@@ -151,9 +151,9 @@ def test_traffic_zones_cannot_share_any_controlled_edge(
 
 
 def test_traffic_zones_cannot_share_member_nodes(
-    phase0_assets: dict[str, dict[str, Any]],
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
-    assets = deepcopy(phase0_assets)
+    assets = deepcopy(repository_assets)
     existing_zone = assets["traffic_zones"]["zones"][0]
     overlapping_zone = deepcopy(existing_zone)
     overlapping_zone["id"] = "overlap-member-node"
@@ -170,14 +170,14 @@ def test_traffic_zones_cannot_share_member_nodes(
 
 
 def test_task_group_must_be_compatible_with_both_ap_nodes(
-    phase0_assets: dict[str, dict[str, Any]],
+    repository_assets: dict[str, dict[str, Any]],
 ) -> None:
     task_schema = json.loads(
         (ROOT / "schemas/task.schema.json").read_text(encoding="utf-8")
     )
     group_only_station = next(
         station
-        for station in phase0_assets["workstations"]["workstations"]
+        for station in repository_assets["workstations"]["workstations"]
         if len(station["allowedRobotGroups"]) == 1
     )
     group = group_only_station["allowedRobotGroups"][0]
@@ -193,16 +193,16 @@ def test_task_group_must_be_compatible_with_both_ap_nodes(
     assert validate_task(
         task,
         task_schema,
-        phase0_assets["model"],
-        phase0_assets["workstations"],
+        repository_assets["model"],
+        repository_assets["workstations"],
     ) == []
 
     task["requiredRobotGroup"] = "jack" if group == "fork" else "fork"
     issues = validate_task(
         task,
         task_schema,
-        phase0_assets["model"],
-        phase0_assets["workstations"],
+        repository_assets["model"],
+        repository_assets["workstations"],
     )
     assert "task.group.incompatible" in error_codes(issues)
     assert "task.workstation.incompatible" in error_codes(issues)

@@ -78,23 +78,23 @@ def requirements_at(
     )
 
 
-def recovery_controller(phase0_assets, scheduler=None) -> RecoveryController:
-    scheduler = scheduler or phase0_assets["scheduler"]
+def recovery_controller(repository_assets, scheduler=None) -> RecoveryController:
+    scheduler = scheduler or repository_assets["scheduler"]
     topology = MapTopology(
-        phase0_assets["model"],
-        phase0_assets["conflicts"],
-        phase0_assets["workstations"],
-        phase0_assets["traffic_zones"],
+        repository_assets["model"],
+        repository_assets["conflicts"],
+        repository_assets["workstations"],
+        repository_assets["traffic_zones"],
     )
     return RecoveryController(
         topology,
         EdgeTravelTimeModel(
-            phase0_assets["model"],
-            phase0_assets["profiles"],
+            repository_assets["model"],
+            repository_assets["profiles"],
             int(scheduler["planner"]["timeQuantumMs"]),
         ),
         scheduler,
-        phase0_assets["traffic_zones"],
+        repository_assets["traffic_zones"],
     )
 
 
@@ -205,10 +205,10 @@ def test_four_vehicle_ring_is_reported_as_one_deterministic_cycle() -> None:
     assert report.max_cycle_length == 4
 
 
-def test_current_edge_reverse_is_reserved_atomically(phase0_assets) -> None:
+def test_current_edge_reverse_is_reserved_atomically(repository_assets) -> None:
     table, requirements = two_vehicle_deadlock()
     report = DeadlockSupervisor().analyze(10_000, requirements, table)
-    controller = recovery_controller(phase0_assets)
+    controller = recovery_controller(repository_assets)
     before = table.snapshot()
 
     decision = controller.resolve(
@@ -268,10 +268,10 @@ def test_current_edge_reverse_is_reserved_atomically(phase0_assets) -> None:
 
 
 @pytest.mark.parametrize("mode", ["disabled", "map_edges_only"])
-def test_dynamic_reverse_modes_are_enforced(phase0_assets, mode: str) -> None:
-    scheduler = deepcopy(phase0_assets["scheduler"])
+def test_dynamic_reverse_modes_are_enforced(repository_assets, mode: str) -> None:
+    scheduler = deepcopy(repository_assets["scheduler"])
     scheduler["traffic"]["reverse"]["mode"] = mode
-    controller = recovery_controller(phase0_assets, scheduler)
+    controller = recovery_controller(repository_assets, scheduler)
     table, _ = two_vehicle_deadlock()
 
     with pytest.raises(RecoveryPlanningError, match="dynamic reverse"):
@@ -280,10 +280,10 @@ def test_dynamic_reverse_modes_are_enforced(phase0_assets, mode: str) -> None:
         )
 
 
-def test_loaded_reverse_policy_is_enforced(phase0_assets) -> None:
-    scheduler = deepcopy(phase0_assets["scheduler"])
+def test_loaded_reverse_policy_is_enforced(repository_assets) -> None:
+    scheduler = deepcopy(repository_assets["scheduler"])
     scheduler["traffic"]["reverse"]["loadedAllowed"] = False
-    controller = recovery_controller(phase0_assets, scheduler)
+    controller = recovery_controller(repository_assets, scheduler)
     table, _ = two_vehicle_deadlock()
     loaded = RecoveryVehicle(
         **{
@@ -296,13 +296,13 @@ def test_loaded_reverse_policy_is_enforced(phase0_assets) -> None:
         controller.plan_for_vehicle(loaded, table, now_ms=10_000, end_ms=50_000)
 
 
-def test_unavailable_recovery_point_causes_stable_safety_stop(phase0_assets) -> None:
+def test_unavailable_recovery_point_causes_stable_safety_stop(repository_assets) -> None:
     table, requirements = two_vehicle_deadlock()
     table.insert_batch(
         (reservation("blocked-recovery", "node:fork:PP1173", "vehicle-c"),)
     )
     report = DeadlockSupervisor().analyze(10_000, requirements, table)
-    controller = recovery_controller(phase0_assets)
+    controller = recovery_controller(repository_assets)
     before = table.snapshot()
 
     decision = controller.resolve(
@@ -345,10 +345,10 @@ def test_unavailable_recovery_point_causes_stable_safety_stop(phase0_assets) -> 
         )
 
 
-def test_repeated_cycle_is_stopped_as_livelock(phase0_assets) -> None:
-    scheduler = deepcopy(phase0_assets["scheduler"])
+def test_repeated_cycle_is_stopped_as_livelock(repository_assets) -> None:
+    scheduler = deepcopy(repository_assets["scheduler"])
     scheduler["traffic"]["deadlock"]["maxRecoveryAttempts"] = 1
-    controller = recovery_controller(phase0_assets, scheduler)
+    controller = recovery_controller(repository_assets, scheduler)
     first_table, requirements = two_vehicle_deadlock()
     report = DeadlockSupervisor().analyze(10_000, requirements, first_table)
 
@@ -395,8 +395,8 @@ def test_repeated_cycle_is_stopped_as_livelock(phase0_assets) -> None:
     assert second.freeze_reservation_ids
 
 
-def test_failed_recovery_can_retry_on_the_same_reservation_table(phase0_assets) -> None:
-    controller = recovery_controller(phase0_assets)
+def test_failed_recovery_can_retry_on_the_same_reservation_table(repository_assets) -> None:
+    controller = recovery_controller(repository_assets)
     table, requirements = two_vehicle_deadlock()
     report = DeadlockSupervisor().analyze(10_000, requirements, table)
 
@@ -429,9 +429,9 @@ def test_failed_recovery_can_retry_on_the_same_reservation_table(phase0_assets) 
 
 
 def test_recovery_cancels_conflicting_future_plans_without_restoring_them(
-    phase0_assets,
+    repository_assets,
 ) -> None:
-    controller = recovery_controller(phase0_assets)
+    controller = recovery_controller(repository_assets)
     table, requirements = two_vehicle_deadlock()
     hold_a = next(item for item in table.snapshot() if item.reservation_id == "hold-a")
     table.replace_vehicle("vehicle-a", (replace(hold_a, end_ms=12_000),))
@@ -473,9 +473,9 @@ def test_recovery_cancels_conflicting_future_plans_without_restoring_them(
 
 
 def test_expired_reverse_rows_do_not_invalidate_the_active_recovery_hold(
-    phase0_assets,
+    repository_assets,
 ) -> None:
-    controller = recovery_controller(phase0_assets)
+    controller = recovery_controller(repository_assets)
     table, requirements = two_vehicle_deadlock()
     report = DeadlockSupervisor().analyze(10_000, requirements, table)
 
@@ -500,10 +500,10 @@ def test_expired_reverse_rows_do_not_invalidate_the_active_recovery_hold(
     assert repeated == first
 
 
-def test_recovery_decision_is_recovered_after_controller_restart(phase0_assets) -> None:
+def test_recovery_decision_is_recovered_after_controller_restart(repository_assets) -> None:
     table, requirements = two_vehicle_deadlock()
     report = DeadlockSupervisor().analyze(10_000, requirements, table)
-    first = recovery_controller(phase0_assets).resolve(
+    first = recovery_controller(repository_assets).resolve(
         report,
         recovery_vehicles(),
         table,
@@ -514,7 +514,7 @@ def test_recovery_decision_is_recovered_after_controller_restart(phase0_assets) 
     after_reverse_ms = first.plan.completed_at_ms + 1
     table.expire_before(after_reverse_ms)
 
-    repeated = recovery_controller(phase0_assets).resolve(
+    repeated = recovery_controller(repository_assets).resolve(
         report,
         recovery_vehicles(),
         table,
@@ -525,13 +525,13 @@ def test_recovery_decision_is_recovered_after_controller_restart(phase0_assets) 
     assert repeated == first
 
 
-def test_stale_wait_graph_cannot_commit_a_recovery(phase0_assets) -> None:
+def test_stale_wait_graph_cannot_commit_a_recovery(repository_assets) -> None:
     table, requirements = two_vehicle_deadlock()
     report = DeadlockSupervisor().analyze(10_000, requirements, table)
     table.expire_before(30_000)
 
     with pytest.raises(RecoveryPlanningError) as caught:
-        recovery_controller(phase0_assets).resolve(
+        recovery_controller(repository_assets).resolve(
             report,
             recovery_vehicles(),
             table,
@@ -543,8 +543,8 @@ def test_stale_wait_graph_cannot_commit_a_recovery(phase0_assets) -> None:
     assert table.snapshot() == ()
 
 
-def test_failed_recovery_rejects_a_changed_reservation_table(phase0_assets) -> None:
-    controller = recovery_controller(phase0_assets)
+def test_failed_recovery_rejects_a_changed_reservation_table(repository_assets) -> None:
+    controller = recovery_controller(repository_assets)
     table, requirements = two_vehicle_deadlock()
     report = DeadlockSupervisor().analyze(10_000, requirements, table)
     decision = controller.resolve(
@@ -575,9 +575,9 @@ def test_failed_recovery_rejects_a_changed_reservation_table(phase0_assets) -> N
 
 
 def test_reverse_of_a_map_reverse_edge_uses_forward_motion_limits(
-    phase0_assets,
+    repository_assets,
 ) -> None:
-    controller = recovery_controller(phase0_assets)
+    controller = recovery_controller(repository_assets)
     edge_value = controller.topology.edges["fork:edge-71"]
     vehicle = RecoveryVehicle(
         vehicle_id="reverse-edge-vehicle",
@@ -612,8 +612,8 @@ def test_reverse_of_a_map_reverse_edge_uses_forward_motion_limits(
     )
 
 
-def test_recovery_requires_full_terminal_hold_horizon(phase0_assets) -> None:
-    controller = recovery_controller(phase0_assets)
+def test_recovery_requires_full_terminal_hold_horizon(repository_assets) -> None:
+    controller = recovery_controller(repository_assets)
     table, _ = two_vehicle_deadlock()
 
     with pytest.raises(RecoveryPlanningError) as caught:
@@ -640,10 +640,10 @@ def test_on_edge_recovery_rejects_endpoint_progress() -> None:
         )
 
 
-def test_duplicate_recovery_vehicle_ids_are_rejected(phase0_assets) -> None:
+def test_duplicate_recovery_vehicle_ids_are_rejected(repository_assets) -> None:
     table, requirements = two_vehicle_deadlock()
     report = DeadlockSupervisor().analyze(10_000, requirements, table)
-    controller = recovery_controller(phase0_assets)
+    controller = recovery_controller(repository_assets)
     duplicate = recovery_vehicles()[0]
 
     with pytest.raises(RecoveryPlanningError) as caught:

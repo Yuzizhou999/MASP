@@ -28,7 +28,7 @@ def online_documents():
 
 def build_runtime(online_documents) -> tuple[OnlineDispatchRuntime, dict]:
     model, conflicts, workstations, profiles, scheduler, zones = online_documents
-    scenario = read_json("scenarios/phase3-realistic-multi-fleet-interactive.json")
+    scenario = read_json("scenarios/interactive-multi-fleet.json")
     runtime = OnlineDispatchRuntime(
         topology=MapTopology(model, conflicts, workstations, zones),
         model=model,
@@ -123,7 +123,7 @@ def test_online_ack_rejects_plan_after_newer_telemetry(online_documents) -> None
 def test_online_interactive_scenario_completes_without_conflicts(
     online_documents,
 ) -> None:
-    scenario = read_json("scenarios/phase3-realistic-multi-fleet-interactive.json")
+    scenario = read_json("scenarios/interactive-multi-fleet.json")
     runtime = run_online_scenario(
         scenario,
         *online_documents,
@@ -148,3 +148,31 @@ def test_online_interactive_scenario_completes_without_conflicts(
         plan.created_at_ms >= runtime.simulator.tasks[plan.task_id].release_time_ms
         for plan in runtime.accepted_plans
     )
+
+
+def test_online_runtime_accepts_local_rl_policy_with_safe_validation(
+    online_documents,
+) -> None:
+    class ReverseLocalPolicy:
+        candidate_count = 1
+
+        def priority_orders(self, **kwargs):
+            return (tuple(reversed(kwargs["proposals"])),)
+
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
+    runtime = run_online_scenario(
+        scenario,
+        *online_documents,
+        policy="rl",
+        seed=0,
+        priority_policy=ReverseLocalPolicy(),
+        rl_candidate_count=1,
+        rl_allow_deviation=True,
+    )
+    result = runtime.result()
+    planning = runtime.planning_result().summary()
+
+    assert result["metrics"]["completedTaskCount"] == len(scenario["tasks"])
+    assert result["metrics"]["reservationConflictRejections"] == 0
+    assert planning["rlInferenceCount"] > 0
+    assert planning["rlFallbackCount"] == 0

@@ -13,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from masp.scenario import build_phase2_plans, build_simulator, load_json  # noqa: E402
+from masp.scenario import build_plans, build_simulator, load_json  # noqa: E402
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -40,13 +40,13 @@ def git_commit() -> str | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Assign, plan and run a MASP phase 2 scenario"
+        description="Assign, plan and simulate a continuous task scenario"
     )
     parser.add_argument(
         "scenario",
         nargs="?",
         type=Path,
-        default=ROOT / "scenarios/phase2-continuous-tasks.json",
+        default=ROOT / "scenarios/continuous-task-planning.json",
     )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--map", type=Path, default=ROOT / "generated/xiate-unified-map-model.json")
@@ -72,7 +72,7 @@ def main() -> None:
         else ROOT / "runs" / scenario["scenarioId"]
     )
 
-    planning, planned_scenario = build_phase2_plans(
+    planning, planned_scenario = build_plans(
         scenario,
         model,
         conflicts,

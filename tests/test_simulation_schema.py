@@ -11,12 +11,12 @@ from masp.scenario import validate_scenario_document
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_phase1_schemas_are_valid_and_example_matches() -> None:
+def test_simulation_schemas_are_valid_and_example_matches() -> None:
     for filename in ("plan.schema.json", "simulation-scenario.schema.json"):
         schema = json.loads((ROOT / "schemas" / filename).read_text(encoding="utf-8"))
         Draft202012Validator.check_schema(schema)
 
     scenario = json.loads(
-        (ROOT / "scenarios/phase1-single-vehicle.json").read_text(encoding="utf-8")
+        (ROOT / "scenarios/explicit-single-vehicle.json").read_text(encoding="utf-8")
     )
     validate_scenario_document(scenario, ROOT / "schemas")

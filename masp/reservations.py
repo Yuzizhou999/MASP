@@ -136,6 +136,22 @@ class ReservationTable:
             sorted(self._by_id.values(), key=lambda item: (item.resource_id, *self._sort_key(item)))
         )
 
+    def clone(self) -> ReservationTable:
+        """Copy an already validated table without replaying conflict checks."""
+
+        result = ReservationTable()
+        result._by_id = dict(self._by_id)
+        result._by_resource = defaultdict(
+            list,
+            {
+                resource_id: list(rows)
+                for resource_id, rows in self._by_resource.items()
+            },
+        )
+        result.version = self.version
+        result.conflict_rejections = self.conflict_rejections
+        return result
+
     def for_vehicle(self, vehicle_id: str) -> tuple[Reservation, ...]:
         return tuple(
             sorted(

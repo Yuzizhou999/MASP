@@ -84,7 +84,7 @@ class PlanValidator:
         if plan.based_on_world_revision != 0:
             raise DomainError(
                 "plan.world_revision.stale",
-                "phase 1 scenarios start from world revision 0",
+                "explicit simulation scenarios start from world revision 0",
             )
         if not plan.segments:
             raise DomainError("plan.segments.empty", "plan must contain segments")
@@ -103,7 +103,7 @@ class PlanValidator:
         if plan.committed_until_ms < segments[-1].end_ms:
             raise DomainError(
                 "plan.commit.incomplete",
-                "phase 1 requires the complete pickup/dropoff plan to be committed",
+                "explicit simulation requires the complete pickup/dropoff plan to be committed",
             )
         if plan.horizon_end_ms < plan.committed_until_ms:
             raise DomainError(
@@ -120,7 +120,7 @@ class PlanValidator:
         if current_node_id is None:
             raise DomainError(
                 "plan.vehicle.on_edge",
-                "phase 1 plans must start while the vehicle is parked at a node",
+                "explicit plans must start while the vehicle is parked at a node",
             )
         load_state = vehicle.load_state
         service_phase = "before_pickup"
@@ -136,7 +136,7 @@ class PlanValidator:
             if previous_end_ms is not None and segment.start_ms != previous_end_ms:
                 raise DomainError(
                     "plan.segment.not_contiguous",
-                    "phase 1 plans must use explicit wait segments and have no time gaps",
+                    "explicit plans must use wait segments and have no time gaps",
                 )
             previous_end_ms = segment.end_ms
             if segment.expected_load_state is not load_state:

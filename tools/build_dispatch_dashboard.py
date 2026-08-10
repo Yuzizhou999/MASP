@@ -17,6 +17,28 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TEMPLATE = ROOT / "visualization" / "dispatch-dashboard.template.html"
 DEFAULT_MAP = ROOT / "generated" / "xiate-unified-scene-model.json"
 PLACEHOLDER = "__MASP_DASHBOARD_JSON__"
+PLANNING_METRIC_KEYS = (
+    "policy",
+    "plannedTaskCount",
+    "unplannedTaskCount",
+    "planningPeriodMs",
+    "planningCycleCount",
+    "decisionCycleCount",
+    "routeCombinationsTried",
+    "routeCombinationsPruned",
+    "scheduleAttempts",
+    "reservationConflictRejections",
+    "planningLatencyMs",
+    "planningTimeoutCount",
+    "planningPeriodMissCount",
+    "rlInferenceCount",
+    "rlFallbackCount",
+    "rlInferenceMs",
+    "rlSafetyFallbackCount",
+    "rlGuardianCandidateCount",
+    "rlGuardianOverrideCount",
+    "rlAllowDeviation",
+)
 
 
 def load_json(path: Path, *, required: bool = True) -> dict[str, Any]:
@@ -48,6 +70,7 @@ def compact_map(model: dict[str, Any]) -> dict[str, Any]:
             "p1": edge["p1"],
             "p2": edge["p2"],
             "p3": edge["p3"],
+            "shared": bool(edge.get("sharedMatch")),
         }
         for edge in model.get("edges", [])
     ]
@@ -60,6 +83,14 @@ def compact_map(model: dict[str, Any]) -> dict[str, Any]:
             {"p0": item["p0"], "p1": item["p1"], "p2": item["p2"], "p3": item["p3"]}
             for item in model.get("sharedOverlays", [])
         ],
+    }
+
+
+def compact_planning(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: summary[key]
+        for key in PLANNING_METRIC_KEYS
+        if key in summary
     }
 
 
@@ -93,10 +124,16 @@ def build_bundle(
     map_path: Path,
     *,
     scenario_path: Path | None = None,
+    baseline_run_dir: Path | None = None,
 ) -> dict[str, Any]:
     result = load_json(run_dir / "result.json")
     planned = load_json(run_dir / "planned-scenario.json", required=False)
     planning = load_json(run_dir / "planning-summary.json", required=False)
+    baseline_planning = (
+        load_json(baseline_run_dir / "planning-summary.json", required=False)
+        if baseline_run_dir is not None
+        else {}
+    )
     manifest = load_json(run_dir / "manifest.json", required=False)
     scenario = load_json(scenario_path, required=False) if scenario_path else {}
 
@@ -159,7 +196,8 @@ def build_bundle(
         "events": result.get("eventLog", []),
         "metrics": result.get("metrics", {}),
         "online": result.get("online", {}),
-        "planning": planning,
+        "planning": compact_planning(planning),
+        "baselinePlanning": compact_planning(baseline_planning),
         "manifest": manifest,
     }
 
@@ -169,6 +207,12 @@ def main() -> None:
     parser.add_argument("run_dir", type=Path, help="Run directory containing result.json")
     parser.add_argument("--map", dest="map_path", type=Path, default=DEFAULT_MAP)
     parser.add_argument("--scenario", type=Path, default=None, help="Optional source scenario JSON")
+    parser.add_argument(
+        "--baseline-run",
+        type=Path,
+        default=None,
+        help="Optional baseline run directory used for planning metric comparisons",
+    )
     parser.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
@@ -177,7 +221,12 @@ def main() -> None:
     template = args.template.read_text(encoding="utf-8")
     if PLACEHOLDER not in template:
         raise ValueError(f"Missing placeholder {PLACEHOLDER} in {args.template}")
-    bundle = build_bundle(args.run_dir, args.map_path, scenario_path=args.scenario)
+    bundle = build_bundle(
+        args.run_dir,
+        args.map_path,
+        scenario_path=args.scenario,
+        baseline_run_dir=args.baseline_run,
+    )
     payload = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(template.replace(PLACEHOLDER, payload), encoding="utf-8")

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://masp.local/schemas/phase3-scenario.schema.json",
-  "title": "MASP phase 3 RH-PP benchmark scenario",
-  "description": "阶段 3 输入包含固定车队和按 releaseTimeMs 持续进入的任务，RH-PP 在每个规划周期生成优先级候选。",
+  "$id": "https://masp.local/schemas/dispatch-scenario.schema.json",
+  "title": "MASP rolling-horizon dispatch scenario",
+  "description": "Fixed-fleet task stream used by rolling-horizon priority coordination.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "scenarioId", "seed", "endTimeMs", "vehicles", "tasks"],

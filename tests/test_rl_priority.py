@@ -11,7 +11,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("gymnasium")
 
 from masp.domain import TransportTask, Vehicle
-from masp.phase3 import RollingHorizonPlanner
+from masp.coordination import RollingHorizonPlanner
 from masp.reservations import ReservationTable
 from masp.rl_priority import (
     EncodedPriorityObservation,
@@ -22,7 +22,7 @@ from masp.rl_priority import (
     PriorityTrainingCase,
     load_checkpoint,
 )
-from masp.scenario import build_phase3_plans, build_simulator
+from masp.scenario import build_dispatch_plans, build_simulator
 from masp.topology import MapTopology
 
 from conftest import read_json
@@ -39,7 +39,7 @@ def rl_context():
     profiles = read_json("config/robot-profiles.json")
     scheduler = read_json("config/scheduler.json")
     zones = read_json("config/traffic-zones.json")
-    scenario = read_json("scenarios/phase3-rh-pp-benchmark.json")
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
     topology = MapTopology(model, conflicts, workstations, zones)
     planner = RollingHorizonPlanner(
         topology, model, profiles, scheduler, zones, policy="congestion", seed=0
@@ -99,6 +99,11 @@ def test_observation_encoder_emits_masked_graph_path_tokens(rl_context) -> None:
 
     assert observation.agent_features.shape == (8, 20)
     assert observation.path_tokens.shape == (8, 12, 10)
+    assert observation.conflict_matrix is not None
+    assert observation.conflict_matrix.shape == (8, 8)
+    assert np.array_equal(
+        observation.conflict_matrix, observation.conflict_matrix.T
+    )
     assert observation.mask.sum() == len(rl_context["proposals"])
     assert observation.path_mask[: observation.candidate_count].sum() > 0
     assert not observation.mask[observation.candidate_count :].any()
@@ -135,6 +140,33 @@ def test_pointer_decoder_returns_each_valid_candidate_once() -> None:
     assert action[0, 3:].tolist() == [-1, -1, -1]
     assert action[1, 5:].tolist() == [-1]
     assert log_prob.shape == value.shape == (2,)
+
+
+def test_local_priority_prefix_preserves_deterministic_baseline_tail() -> None:
+    evaluated: list[tuple[int, ...]] = []
+    observation = EncodedPriorityObservation(
+        agent_features=np.zeros((4, 20), dtype=np.float32),
+        path_tokens=np.zeros((4, 3, 10), dtype=np.float32),
+        path_mask=np.ones((4, 3), dtype=np.int8),
+        mask=np.ones((4,), dtype=np.int8),
+        vehicle_ids=("v0", "v1", "v2", "v3"),
+        task_ids=("t0", "t1", "t2", "t3"),
+    )
+    case = PriorityTrainingCase(
+        observation=observation,
+        evaluator=lambda order: evaluated.append(order) or 1.0,
+    )
+    env = PriorityOrderEnv([case], seed=0, prefix_count=2)
+    env.reset(options={"case_index": 0})
+
+    _, reward, terminated, truncated, info = env.step(
+        np.asarray([2, 0, -1, -1], dtype=np.int64)
+    )
+
+    assert evaluated == [(2, 0, 1, 3)]
+    assert reward == 1.0
+    assert terminated and not truncated
+    assert info["priorityPrefixCount"] == 2
 
 
 def test_checkpoint_round_trip_preserves_deterministic_action(tmp_path: Path) -> None:
@@ -233,7 +265,7 @@ def test_rl_policy_failure_falls_back_to_safe_congestion_planning(rl_context) ->
 
     scenario = rl_context["scenario"]
     documents = rl_context["documents"]
-    planning, planned = build_phase3_plans(
+    planning, planned = build_dispatch_plans(
         scenario,
         *documents,
         ROOT / "schemas",

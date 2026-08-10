@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from masp.online import run_online_scenario  # noqa: E402
-from masp.scenario import load_json, validate_phase3_scenario_document  # noqa: E402
+from masp.scenario import load_json, validate_dispatch_scenario_document  # noqa: E402
 
 
 POLICIES = (
@@ -53,17 +53,20 @@ def git_commit() -> str | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run MASP phase 6 in-process online dispatch simulation"
+        description="Run the MASP in-process online dispatch simulation"
     )
     parser.add_argument(
         "scenario",
         nargs="?",
         type=Path,
-        default=ROOT / "scenarios/phase3-realistic-multi-fleet-interactive.json",
+        default=ROOT / "scenarios/interactive-multi-fleet.json",
     )
     parser.add_argument("--policy", choices=POLICIES, default="congestion")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--rl-checkpoint", type=Path)
+    parser.add_argument("--rl-candidates", type=int)
+    parser.add_argument("--rl-allow-deviation", action="store_true")
     parser.add_argument(
         "--map",
         type=Path,
@@ -99,7 +102,7 @@ def main() -> None:
 
     scenario_path = args.scenario.resolve()
     scenario = load_json(scenario_path)
-    validate_phase3_scenario_document(scenario, args.schemas)
+    validate_dispatch_scenario_document(scenario, args.schemas)
     model = load_json(args.map)
     conflicts = load_json(args.conflicts)
     workstations = load_json(args.workstations)
@@ -107,6 +110,7 @@ def main() -> None:
     scheduler = load_json(args.scheduler)
     traffic_zones = load_json(args.traffic_zones)
     seed = int(scenario["seed"] if args.seed is None else args.seed)
+    rl_checkpoint = args.rl_checkpoint.resolve() if args.rl_checkpoint else None
     output_dir = (
         args.output_dir.resolve()
         if args.output_dir
@@ -123,6 +127,9 @@ def main() -> None:
         traffic_zones,
         policy=args.policy,
         seed=seed,
+        rl_checkpoint=str(rl_checkpoint) if rl_checkpoint is not None else None,
+        rl_candidate_count=args.rl_candidates,
+        rl_allow_deviation=args.rl_allow_deviation,
     )
     planning = runtime.planning_result()
     planning_summary = planning.summary()
@@ -143,9 +150,24 @@ def main() -> None:
                 "decisionCycleCount",
                 "priorityCandidatesEvaluated",
                 "insertedWaitMs",
+                "routeCombinationsTried",
+                "routeCombinationsPruned",
+                "scheduleAttempts",
+                "maxRouteExpansionLevel",
+                "planningDeadlineExhaustedCount",
+                "conflictComponentCount",
+                "coupledConflictComponentCount",
+                "largestConflictComponent",
                 "planningLatencyMs",
                 "planningTimeoutCount",
                 "planningPeriodMissCount",
+                "rlInferenceCount",
+                "rlFallbackCount",
+                "rlSafetyFallbackCount",
+                "rlGuardianCandidateCount",
+                "rlGuardianOverrideCount",
+                "rlAllowDeviation",
+                "rlInferenceMs",
             )
         },
         "online": simulation["online"],
@@ -192,6 +214,11 @@ def main() -> None:
                 "profilesSha256": sha256_file(args.profiles),
                 "schedulerSha256": sha256_file(args.scheduler),
                 "trafficZonesSha256": sha256_file(args.traffic_zones),
+                "rlCheckpointSha256": (
+                    sha256_file(rl_checkpoint)
+                    if rl_checkpoint is not None
+                    else None
+                ),
             },
             "runtime": {
                 "python": sys.version.split()[0],

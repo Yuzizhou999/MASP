@@ -58,6 +58,7 @@ body.map-expanded { overflow: hidden; }
 .road { fill: none; stroke-width: .22; opacity: .3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .road.fork { stroke: var(--fork); } .road.jack { stroke: var(--jack); }
 .road.shared { stroke: #82919d; opacity: .22; }
+.road.shared-segment { stroke-width: .38; opacity: .48; }
 .road.active { stroke: #20313f; stroke-width: .7; opacity: .95; }
 .shared-overlay { fill: none; stroke: var(--shared); stroke-width: .75; stroke-dasharray: 1.2 .8; opacity: .42; vector-effect: non-scaling-stroke; pointer-events: none; }
 .node { stroke: #fff; stroke-width: .28; vector-effect: non-scaling-stroke; }
@@ -77,9 +78,12 @@ body.map-expanded { overflow: hidden; }
 .time-readout { min-width: 92px; color: #1d5eae; font-variant-numeric: tabular-nums; font-size: 13px; }
 .speed { width: 74px; padding: 6px; }
 .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.planning-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.planning-grid .stat-value { font-size: 16px; }
 .stat { padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; }
 .stat-value { font-size: 20px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stat-label { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.stat-context { margin-top: 5px; color: var(--muted); font-size: 10px; }
 .section-body { padding: 11px 15px; }
 .list { display: grid; gap: 6px; max-height: 232px; overflow: auto; }
 .list-row { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; border-radius: 5px; padding: 7px 6px; background: #f8fafb; text-align: left; }
@@ -108,7 +112,7 @@ body.map-expanded { overflow: hidden; }
       <div class="panel-heading"><h2>仓库地图与实时车辆位置</h2><span id="map-status" class="subtitle"></span></div>
       <div class="map-wrap">
         <svg id="map" role="img" aria-label="仓库调度地图"></svg>
-        <div class="map-toolbar"><button id="toggle-map-size" type="button" aria-pressed="false">放大地图</button><button id="toggle-labels" type="button" aria-pressed="false">显示站点标签</button><button id="reset-view" type="button">重置视图</button></div>
+        <div class="map-toolbar"><button id="toggle-map-size" type="button" aria-pressed="false">放大地图</button><button id="focus-shared" type="button">聚焦共享区</button><button id="toggle-labels" type="button" aria-pressed="false">显示站点标签</button><button id="reset-view" type="button">重置视图</button></div>
       </div>
       <div class="legend"><span><i class="swatch fork"></i>Fork 车</span><span><i class="swatch jack"></i>Jack 车</span><span><i class="swatch shared"></i>共享路径</span><span>紫色节点：工位 AP</span></div>
     </section>
@@ -118,6 +122,7 @@ body.map-expanded { overflow: hidden; }
         <div class="control-row"><button id="play" type="button">播放</button><button id="reset-time" type="button">回到开始</button><input id="time" type="range" min="0" value="0" step="100"><span id="time-readout" class="time-readout">00:00.0</span><select id="speed" class="speed" aria-label="播放速度"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select></div>
       </section>
       <section class="panel controls wide"><div id="stats" class="stats-grid"></div></section>
+      <section class="panel wide"><div class="panel-heading"><h2>规划与 RL 性能</h2><span id="planning-policy" class="badge"></span></div><div class="section-body"><div id="planning-stats" class="stats-grid planning-grid"></div></div></section>
       <section class="panel"><div class="panel-heading"><h2>车辆状态</h2><span id="vehicle-count" class="badge"></span></div><div id="vehicles" class="section-body list"></div></section>
       <section class="panel"><div class="panel-heading"><h2>任务状态</h2><span id="task-count" class="badge"></span></div><div id="tasks" class="section-body list"></div></section>
       <section class="panel wide"><div class="panel-heading"><h2>事件时间线</h2><span id="event-count" class="badge"></span></div><div id="timeline" class="section-body timeline"></div></section>
@@ -167,7 +172,7 @@ function renderMap() {
   svg.replaceChildren();
   const roads = make('g');
   for (const edge of DATA.map.edges) {
-    const path = make('path', {d:pathD(edge), class:`road ${edge.group || 'shared'}`, 'data-edge':edge.id});
+    const path = make('path', {d:pathD(edge), class:`road ${edge.group || 'shared'} ${edge.shared ? 'shared-segment' : ''}`, 'data-edge':edge.id});
     roads.appendChild(path);
   }
   svg.appendChild(roads);
@@ -210,15 +215,18 @@ function positionFor(vehicleId, timeMs) {
 
 function drawVehicles() {
   const layer = document.getElementById('vehicles-layer'); layer.replaceChildren();
+  const activeEdges = new Set();
   for (const vehicle of DATA.vehicles) {
     const located = positionFor(vehicle.vehicleId, currentMs); const p = located.point;
     if (!p) continue;
+    if (located.segment?.edgeId) activeEdges.add(located.segment.edgeId);
     const group = make('g', {class:`vehicle-group ${selectedVehicle === vehicle.vehicleId ? 'selected' : ''}`, 'data-vehicle':vehicle.vehicleId});
     const marker = make('circle', {cx:xCoord(p.x),cy:yCoord(p.y),r:.9,class:`vehicle ${vehicle.robotGroup} ${selectedVehicle === vehicle.vehicleId ? 'selected' : ''}`});
     marker.addEventListener('click', () => { selectedVehicle = selectedVehicle === vehicle.vehicleId ? null : vehicle.vehicleId; drawRoute(); drawVehicles(); renderLists(); });
     group.appendChild(marker);
     const text = make('text', {x:xCoord(p.x)+1.1,y:yCoord(p.y)-1.1,class:'vehicle-label'}); text.textContent = vehicle.vehicleId; group.appendChild(text); layer.appendChild(group);
   }
+  for (const road of svg.querySelectorAll('.road[data-edge]')) road.classList.toggle('active', activeEdges.has(road.dataset.edge));
 }
 function drawRoute() {
   const route = document.getElementById('route-highlight');
@@ -258,9 +266,37 @@ function renderStats() {
   const completed = DATA.tasks.filter(task => taskStatus(task)[0] === '已完成').length;
   const moving = DATA.vehicles.filter(vehicle => vehicleStatus(vehicle)[0] === '行驶中').length;
   const waiting = DATA.vehicles.filter(vehicle => vehicleStatus(vehicle)[0] === '等待').length;
+  const shared = DATA.vehicles.filter(vehicle => { const segment = vehicleStatus(vehicle)[2]; return Boolean(segment?.edgeId && edgeById.get(segment.edgeId)?.shared); }).length;
   const metrics = DATA.metrics || {};
-  document.getElementById('stats').innerHTML = `<div class="stat"><div class="stat-value">${completed}/${DATA.tasks.length}</div><div class="stat-label">当前完成任务</div></div><div class="stat"><div class="stat-value">${moving}</div><div class="stat-label">行驶车辆</div></div><div class="stat"><div class="stat-value">${waiting}</div><div class="stat-label">等待车辆</div></div><div class="stat"><div class="stat-value">${Number(metrics.completedDropoffsPerHour||0).toFixed(1)}</div><div class="stat-label">完成吞吐 / 小时</div></div>`;
-  document.getElementById('map-status').textContent = `${moving} 行驶 · ${waiting} 等待 · ${selectedVehicle ? `已选 ${selectedVehicle}` : '点击车辆查看路线'}`;
+  document.getElementById('stats').innerHTML = `<div class="stat"><div class="stat-value">${completed}/${DATA.tasks.length}</div><div class="stat-label">当前完成任务</div></div><div class="stat"><div class="stat-value">${moving}</div><div class="stat-label">行驶车辆</div></div><div class="stat"><div class="stat-value">${waiting}</div><div class="stat-label">等待车辆</div></div><div class="stat"><div class="stat-value">${shared}</div><div class="stat-label">共享区车辆</div></div><div class="stat"><div class="stat-value">${Number(metrics.completedDropoffsPerHour||0).toFixed(1)}</div><div class="stat-label">仿真总吞吐 / 小时</div></div><div class="stat"><div class="stat-value">${Number(metrics.reservationConflictRejections||0)}</div><div class="stat-label">资源冲突拒绝</div></div>`;
+  document.getElementById('map-status').textContent = `${moving} 行驶 · ${waiting} 等待 · ${shared} 共享区 · ${selectedVehicle ? `已选 ${selectedVehicle}` : '点击车辆查看路线'}`;
+}
+function metricContext(current, baseline, unit = '') {
+  const now = Number(current); const before = Number(baseline);
+  if (!Number.isFinite(before)) return '未提供对比基线';
+  if (!Number.isFinite(now) || before === 0) return `基线 ${before}${unit}`;
+  const delta = (now / before - 1) * 100;
+  return `基线 ${before}${unit} · ${delta <= 0 ? '下降' : '上升'} ${Math.abs(delta).toFixed(1)}%`;
+}
+function planningStat(value, labelText, context) {
+  return `<div class="stat"><div class="stat-value">${safe(value)}</div><div class="stat-label">${safe(labelText)}</div><div class="stat-context">${safe(context)}</div></div>`;
+}
+function renderPlanningStats() {
+  const planning = DATA.planning || {}; const baseline = DATA.baselinePlanning || {};
+  const latency = planning.planningLatencyMs || {}; const baselineLatency = baseline.planningLatencyMs || {};
+  const p95 = Number(latency.p95 || 0); const maximum = Number(latency.max || 0);
+  const rlCount = Number(planning.rlInferenceCount || 0); const policy = planning.policy || DATA.manifest?.policy || 'unknown';
+  const rlValue = policy === 'rl' ? (rlCount ? `${rlCount} 次` : '未触发') : '未启用';
+  const rlContext = policy === 'rl' ? `回退 ${Number(planning.rlFallbackCount || 0)} · 推理 ${Number(planning.rlInferenceMs || 0).toFixed(1)} ms` : `当前策略 ${policy}`;
+  document.getElementById('planning-policy').textContent = policy === 'rl' ? 'RL 优先级' : `策略 ${policy}`;
+  document.getElementById('planning-stats').innerHTML = [
+    planningStat(`${p95.toFixed(1)} ms`, '规划周期 P95', metricContext(p95, baselineLatency.p95, ' ms')),
+    planningStat(`${maximum.toFixed(1)} ms`, '最慢规划周期', metricContext(maximum, baselineLatency.max, ' ms')),
+    planningStat(Number(planning.planningTimeoutCount || 0), '规划超时周期', metricContext(planning.planningTimeoutCount || 0, baseline.planningTimeoutCount)),
+    planningStat(Number(planning.routeCombinationsTried || 0), '路线组合尝试', metricContext(planning.routeCombinationsTried || 0, baseline.routeCombinationsTried)),
+    planningStat(Number(planning.scheduleAttempts || 0), 'SIPP 调度尝试', metricContext(planning.scheduleAttempts || 0, baseline.scheduleAttempts)),
+    planningStat(rlValue, 'RL 优先级参与', rlContext),
+  ].join('');
 }
 function renderTimeline() {
   const el = document.getElementById('timeline'); const visible = DATA.events.filter(event => event.timeMs <= currentMs).slice(-18).reverse(); el.replaceChildren();
@@ -289,10 +325,16 @@ function setMapExpanded(expanded) {
 toggleMapSize.addEventListener('click',()=>setMapExpanded(!mapPanel.classList.contains('is-expanded')));
 document.addEventListener('keydown',event=>{if(event.key === 'Escape' && mapPanel.classList.contains('is-expanded')) setMapExpanded(false);});
 document.getElementById('reset-view').addEventListener('click',()=>{svg.setAttribute('viewBox',`0 0 ${mapW} ${mapH}`);});
+document.getElementById('focus-shared').addEventListener('click',()=>{
+  const points = (DATA.map.sharedOverlays || []).flatMap(edge => [edge.p0, edge.p1, edge.p2, edge.p3]).map(item => [xCoord(item[0]), yCoord(item[1])]);
+  if (!points.length) return;
+  const xs = points.map(item => item[0]); const ys = points.map(item => item[1]); const margin = 3;
+  svg.setAttribute('viewBox', `${Math.min(...xs)-margin} ${Math.min(...ys)-margin} ${Math.max(...xs)-Math.min(...xs)+margin*2} ${Math.max(...ys)-Math.min(...ys)+margin*2}`);
+});
 document.getElementById('subtitle').textContent=`${DATA.scenarioId} · ${DATA.vehicles.length} 辆车 · ${DATA.tasks.length} 个任务`;
 const replayModeLabel=DATA.replayMode==='online'?'在线调度事件回放':'本地离线回放';
 document.getElementById('meta').textContent=`仿真时长 ${fmtMs(DATA.endTimeMs)} · seed ${DATA.seed ?? '-'} · ${replayModeLabel}`;
-renderMap(); drawRoute(); render();
+renderMap(); drawRoute(); renderPlanningStats(); render();
 </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenarioId": "phase1-single-vehicle",
+  "scenarioId": "explicit-single-vehicle",
   "seed": 0,
   "endTimeMs": 90000,
   "vehicles": [
@@ -14,7 +14,7 @@
   ],
   "tasks": [
     {
-      "taskId": "task-phase1-001",
+      "taskId": "task-explicit-001",
       "releaseTimeMs": 0,
       "pickupNodeId": "fork:AP1123",
       "dropoffNodeId": "fork:AP2121",
@@ -28,7 +28,7 @@
       "id": "plan-fork-001-001",
       "revision": 0,
       "vehicleId": "fork-001",
-      "taskId": "task-phase1-001",
+      "taskId": "task-explicit-001",
       "basedOnVehicleRevision": 0,
       "basedOnWorldRevision": 0,
       "createdAtMs": 100,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from itertools import product
 from typing import Any, Iterable
@@ -29,9 +30,12 @@ class SippPlanningError(DomainError):
 @dataclass(frozen=True)
 class SippDiagnostics:
     route_combinations_tried: int
+    route_combinations_pruned: int
     schedule_attempts: int
     inserted_wait_ms: int
     completion_time_ms: int
+    route_expansion_level: int
+    deadline_exhausted: bool
 
 # 规划结果 = 计划 + 诊断
 @dataclass(frozen=True)
@@ -55,10 +59,22 @@ class ContinuousTimeSippPlanner:
         self.routes = routes
         self.travel_times = travel_times
         self.route_limit = int(planner.get("candidateRouteCount", 3))
+        self.progressive_route_search = bool(
+            planner.get("progressiveRouteSearch", True)
+        )
+        self.route_expansion_wait_threshold_ms = max(
+            0, int(planner.get("routeExpansionWaitThresholdMs", 5000))
+        )
+        self.branch_and_bound_enabled = bool(
+            planner.get("routeBranchAndBound", True)
+        )
         self.time_quantum_ms = int(planner.get("timeQuantumMs", 100))
         self.max_schedule_attempts = int(planner.get("maxSippScheduleAttempts", 200))
         self.max_wait_ms = int(wait["maxPlannedWaitMs"])
         self.recovery_node_ids = tuple(sorted(set(recovery_node_ids)))
+        self._recovery_route_cache: dict[
+            tuple[str, str, int], tuple[SpatialRoute, ...]
+        ] = {}
 
     def plan_task(
         self,
@@ -68,12 +84,15 @@ class ContinuousTimeSippPlanner:
         horizon_end_ms: int,
         reservations: ReservationTable,
         plan_number: int,
+        *,
+        deadline_ns: int | None = None,
     ) -> PlannedTask:
         # 要求车辆停在节点上，而不是在边上
         if vehicle.current_node_id is None:
             raise SippPlanningError(
                 "sipp.vehicle.on_edge", "SIPP requires a vehicle parked at a node"
             )
+        self._check_deadline(deadline_ns)
         # 分别为空载、载货、恢复路线生成候选路线
         empty_routes = self.routes.candidate_routes(
             vehicle.robot_group,
@@ -90,6 +109,7 @@ class ContinuousTimeSippPlanner:
             self.route_limit,
         )
         recovery_routes = self._recovery_routes(vehicle.robot_group, task.dropoff_node_id)
+        self._check_deadline(deadline_ns)
         if not empty_routes or not loaded_routes or not recovery_routes:
             raise SippPlanningError(
                 "sipp.spatial_route.missing",
@@ -99,60 +119,151 @@ class ContinuousTimeSippPlanner:
         # 路线和时间组合尝试，找出最优的计划
         best: tuple[tuple[Any, ...], tuple[PlanSegment, ...], int, int] | None = None
         combinations_tried = 0
+        combinations_pruned = 0
         total_attempts = 0
-        for empty_route, loaded_route, recovery_route in product(
-            empty_routes, loaded_routes, recovery_routes
-        ):
-            combinations_tried += 1
-            shift_ms = 0
-            for _ in range(self.max_schedule_attempts):
-                total_attempts += 1
-                try:
-                    segments = self._schedule_combination(
-                        vehicle,
-                        task,
-                        now_ms,
-                        shift_ms,
-                        horizon_end_ms,
-                        reservations,
-                        empty_route,
-                        loaded_route,
-                        recovery_route,
-                    )
-                    completion = segments[-1].end_ms
-                    wait_ms = sum(
-                        segment.end_ms - segment.start_ms
-                        for segment in segments
-                        if segment.kind is SegmentKind.WAIT
-                    )
-                    key = (
-                        completion,
-                        wait_ms,
-                        empty_route.edge_ids,
-                        loaded_route.edge_ids,
-                        recovery_route.edge_ids,
-                    )
-                    if best is None or key < best[0]:
-                        best = (key, segments, wait_ms, completion)
+        expansion_level = 0
+        deadline_exhausted = False
+        indexed_combinations = [
+            (
+                empty_index,
+                loaded_index,
+                recovery_index,
+                empty_route,
+                loaded_route,
+                recovery_route,
+            )
+            for (empty_index, empty_route), (loaded_index, loaded_route), (
+                recovery_index,
+                recovery_route,
+            ) in product(
+                enumerate(empty_routes),
+                enumerate(loaded_routes),
+                enumerate(recovery_routes),
+            )
+        ]
+        max_level = max(len(empty_routes), len(loaded_routes), len(recovery_routes))
+        levels = range(1, max_level + 1) if self.progressive_route_search else (max_level,)
+        stop_search = False
+        for level in levels:
+            if (
+                self.progressive_route_search
+                and best is not None
+                and best[2] <= self.route_expansion_wait_threshold_ms
+            ):
+                break
+            expansion_level = level
+            level_combinations = [
+                item
+                for item in indexed_combinations
+                if (
+                    max(item[0], item[1], item[2]) + 1 == level
+                    if self.progressive_route_search
+                    else True
+                )
+            ]
+            level_combinations.sort(
+                key=lambda item: (
+                    item[3].free_flow_travel_ms
+                    + item[4].free_flow_travel_ms
+                    + item[5].free_flow_travel_ms,
+                    item[3].edge_ids,
+                    item[4].edge_ids,
+                    item[5].edge_ids,
+                )
+            )
+            for _, _, _, empty_route, loaded_route, recovery_route in level_combinations:
+                if self._deadline_reached(deadline_ns):
+                    deadline_exhausted = True
+                    stop_search = True
                     break
-                except SippPlanningError as error:
-                    if error.suggested_delay_ms <= 0:
+                lower_bound = (
+                    now_ms
+                    + empty_route.free_flow_travel_ms
+                    + task.pickup_service_ms
+                    + loaded_route.free_flow_travel_ms
+                    + task.dropoff_service_ms
+                    + recovery_route.free_flow_travel_ms
+                )
+                if (
+                    self.branch_and_bound_enabled
+                    and best is not None
+                    and best[3] < lower_bound
+                ):
+                    combinations_pruned += 1
+                    continue
+                combinations_tried += 1
+                shift_ms = 0
+                observed_shifts: set[int] = set()
+                for _ in range(self.max_schedule_attempts):
+                    if self._deadline_reached(deadline_ns):
+                        deadline_exhausted = True
+                        stop_search = True
                         break
-                    delay = max(self.time_quantum_ms, error.suggested_delay_ms)
-                    shift_ms += (
-                        (delay + self.time_quantum_ms - 1)
-                        // self.time_quantum_ms
-                        * self.time_quantum_ms
-                    )
-                    if (
-                        shift_ms > self.max_wait_ms
-                        or not self.topology.wait_allowed(
-                            vehicle.current_node_id, vehicle.robot_group
+                    total_attempts += 1
+                    observed_shifts.add(shift_ms)
+                    try:
+                        segments = self._schedule_combination(
+                            vehicle,
+                            task,
+                            now_ms,
+                            shift_ms,
+                            horizon_end_ms,
+                            reservations,
+                            empty_route,
+                            loaded_route,
+                            recovery_route,
+                            deadline_ns=deadline_ns,
                         )
-                    ):
+                        completion = segments[-1].end_ms
+                        wait_ms = sum(
+                            segment.end_ms - segment.start_ms
+                            for segment in segments
+                            if segment.kind is SegmentKind.WAIT
+                        )
+                        key = (
+                            completion,
+                            wait_ms,
+                            empty_route.edge_ids,
+                            loaded_route.edge_ids,
+                            recovery_route.edge_ids,
+                        )
+                        if best is None or key < best[0]:
+                            best = (key, segments, wait_ms, completion)
                         break
+                    except SippPlanningError as error:
+                        if error.code == "sipp.deadline.exceeded":
+                            deadline_exhausted = True
+                            stop_search = True
+                            break
+                        if error.suggested_delay_ms <= 0:
+                            break
+                        delay = max(self.time_quantum_ms, error.suggested_delay_ms)
+                        next_shift_ms = shift_ms + (
+                            (delay + self.time_quantum_ms - 1)
+                            // self.time_quantum_ms
+                            * self.time_quantum_ms
+                        )
+                        if next_shift_ms in observed_shifts:
+                            break
+                        shift_ms = next_shift_ms
+                        if (
+                            shift_ms > self.max_wait_ms
+                            or not self.topology.wait_allowed(
+                                vehicle.current_node_id, vehicle.robot_group
+                            )
+                        ):
+                            break
+                if stop_search:
+                    break
+            if stop_search:
+                break
 
         if best is None:
+            if deadline_exhausted:
+                raise SippPlanningError(
+                    "sipp.deadline.exceeded",
+                    f"task {task.task_id!r} planning exceeded its computation deadline",
+                )
             raise SippPlanningError(
                 "sipp.no_schedule",
                 f"task {task.task_id!r} has no conflict-free schedule within the horizon",
@@ -174,11 +285,25 @@ class ContinuousTimeSippPlanner:
             plan=plan,
             diagnostics=SippDiagnostics(
                 route_combinations_tried=combinations_tried,
+                route_combinations_pruned=combinations_pruned,
                 schedule_attempts=total_attempts,
                 inserted_wait_ms=wait_ms,
                 completion_time_ms=completion,
+                route_expansion_level=expansion_level,
+                deadline_exhausted=deadline_exhausted,
             ),
         )
+
+    @staticmethod
+    def _deadline_reached(deadline_ns: int | None) -> bool:
+        return deadline_ns is not None and time.perf_counter_ns() >= deadline_ns
+
+    @classmethod
+    def _check_deadline(cls, deadline_ns: int | None) -> None:
+        if cls._deadline_reached(deadline_ns):
+            raise SippPlanningError(
+                "sipp.deadline.exceeded", "planning computation deadline exceeded"
+            )
 
     def schedule_route_intent(
         self,
@@ -242,6 +367,10 @@ class ContinuousTimeSippPlanner:
     def _recovery_routes(
         self, robot_group: str, dropoff_node_id: str
     ) -> tuple[SpatialRoute, ...]:
+        cache_key = (robot_group, dropoff_node_id, self.route_limit)
+        cached = self._recovery_route_cache.get(cache_key)
+        if cached is not None:
+            return cached
         candidates: list[SpatialRoute] = []
         for node_id in self.recovery_node_ids:
             node = self.topology.nodes.get(node_id)
@@ -256,12 +385,14 @@ class ContinuousTimeSippPlanner:
                     limit=1,
                 )
             )
-        return tuple(
+        result = tuple(
             sorted(
                 candidates,
                 key=lambda item: (item.free_flow_travel_ms, item.edge_ids, item.end_node_id),
             )[: self.route_limit]
         )
+        self._recovery_route_cache[cache_key] = result
+        return result
 
     # 规划一组路线和时间组合，返回计划段
     def _schedule_combination(
@@ -275,7 +406,10 @@ class ContinuousTimeSippPlanner:
         empty_route: SpatialRoute,
         loaded_route: SpatialRoute,
         recovery_route: SpatialRoute,
+        *,
+        deadline_ns: int | None = None,
     ) -> tuple[PlanSegment, ...]:
+        self._check_deadline(deadline_ns)
         segments: list[PlanSegment] = []
         current_ms = now_ms
         if shift_ms:
@@ -300,6 +434,7 @@ class ContinuousTimeSippPlanner:
             LoadState.EMPTY,
             reservations,
             horizon_end_ms,
+            deadline_ns=deadline_ns,
         )
         current_ms = self._append_service(
             segments,
@@ -311,6 +446,7 @@ class ContinuousTimeSippPlanner:
             LoadState.EMPTY,
             reservations,
             horizon_end_ms,
+            deadline_ns=deadline_ns,
         )
         current_ms = self._schedule_route(
             segments,
@@ -320,6 +456,7 @@ class ContinuousTimeSippPlanner:
             LoadState.LOADED,
             reservations,
             horizon_end_ms,
+            deadline_ns=deadline_ns,
         )
         current_ms = self._append_service(
             segments,
@@ -331,6 +468,7 @@ class ContinuousTimeSippPlanner:
             LoadState.LOADED,
             reservations,
             horizon_end_ms,
+            deadline_ns=deadline_ns,
         )
         self._schedule_route(
             segments,
@@ -340,6 +478,7 @@ class ContinuousTimeSippPlanner:
             LoadState.EMPTY,
             reservations,
             horizon_end_ms,
+            deadline_ns=deadline_ns,
         )
         return tuple(segments)
 
@@ -353,12 +492,15 @@ class ContinuousTimeSippPlanner:
         load_state: LoadState,
         reservations: ReservationTable,
         horizon_end_ms: int,
+        *,
+        deadline_ns: int | None = None,
     ) -> int:
         current_node_id = route.start_node_id
         current_ms = ready_ms
         edge_ids = route.edge_ids
         edge_index = 0
         while edge_index < len(edge_ids):
+            self._check_deadline(deadline_ns)
             edge_id = edge_ids[edge_index]
             entry_zone = self.topology.traffic_zones.entry_zone_for_edge(edge_id)
             if entry_zone is not None:
@@ -378,6 +520,7 @@ class ContinuousTimeSippPlanner:
                     load_state,
                     reservations,
                     horizon_end_ms,
+                    deadline_ns=deadline_ns,
                 )
                 current_node_id = self.topology.edges[atomic_edge_ids[-1]]["end"]
                 edge_index = atomic_end + 1
@@ -399,6 +542,7 @@ class ContinuousTimeSippPlanner:
                 load_state,
                 reservations,
                 horizon_end_ms,
+                deadline_ns=deadline_ns,
             )
             current_node_id = self.topology.edges[edge_id]["end"]
             edge_index += 1
@@ -460,7 +604,10 @@ class ContinuousTimeSippPlanner:
         load_state: LoadState,
         reservations: ReservationTable,
         horizon_end_ms: int,
+        *,
+        deadline_ns: int | None = None,
     ) -> int:
+        self._check_deadline(deadline_ns)
         edge = self.topology.edges[edge_id]
         duration_ms = self.travel_times.duration_ms(edge, load_state)
         probe = PlanSegment(
@@ -480,6 +627,7 @@ class ContinuousTimeSippPlanner:
             duration_ms,
             vehicle.vehicle_id,
             reservations,
+            deadline_ns=deadline_ns,
         )
         if departure_ms > current_ms:
             self._append_wait(
@@ -522,7 +670,10 @@ class ContinuousTimeSippPlanner:
         load_state: LoadState,
         reservations: ReservationTable,
         horizon_end_ms: int,
+        *,
+        deadline_ns: int | None = None,
     ) -> int:
+        self._check_deadline(deadline_ns)
         offset_ms = 0
         scheduled: list[tuple[dict[str, Any], int, int, tuple[str, ...]]] = []
         requests: list[RelativeReservationRequest] = []
@@ -604,7 +755,10 @@ class ContinuousTimeSippPlanner:
         load_state: LoadState,
         reservations: ReservationTable,
         horizon_end_ms: int,
+        *,
+        deadline_ns: int | None = None,
     ) -> int:
+        self._check_deadline(deadline_ns)
         probe = PlanSegment(
             segment_id="probe",
             kind=kind,
@@ -622,6 +776,7 @@ class ContinuousTimeSippPlanner:
             duration_ms,
             vehicle.vehicle_id,
             reservations,
+            deadline_ns=deadline_ns,
         )
         if start_ms != ready_ms:
             raise SippPlanningError(
@@ -714,10 +869,13 @@ class ContinuousTimeSippPlanner:
         duration_ms: int,
         vehicle_id: str,
         reservations: ReservationTable,
+        *,
+        deadline_ns: int | None = None,
     ) -> int:
         candidate = not_before_ms
         resources = tuple(resource_ids)
         for _ in range(10_000):
+            ContinuousTimeSippPlanner._check_deadline(deadline_ns)
             next_candidate = max(
                 (
                     reservations.first_available_start(

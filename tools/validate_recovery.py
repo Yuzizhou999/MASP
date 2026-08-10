@@ -13,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from masp.phase4 import run_phase4_scenario  # noqa: E402
+from masp.recovery_scenario import run_recovery_scenario  # noqa: E402
 from masp.scenario import load_json  # noqa: E402
 
 
@@ -41,13 +41,13 @@ def git_commit() -> str | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run MASP phase 4 deadlock supervision and reverse recovery"
+        description="Validate deadlock supervision and reverse recovery"
     )
     parser.add_argument(
         "scenario",
         nargs="?",
         type=Path,
-        default=ROOT / "scenarios/phase4-deadlock-recovery.json",
+        default=ROOT / "scenarios/deadlock-recovery.json",
     )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
@@ -79,7 +79,7 @@ def main() -> None:
 
     scenario_path = args.scenario.resolve()
     scenario = load_json(scenario_path)
-    result = run_phase4_scenario(
+    result = run_recovery_scenario(
         scenario,
         load_json(args.map),
         load_json(args.conflicts),
@@ -92,7 +92,7 @@ def main() -> None:
     document = result.to_dict()
     if not result.accepted:
         failed = [name for name, accepted in result.checks.items() if not accepted]
-        raise SystemExit(f"phase 4 acceptance checks failed: {failed!r}")
+        raise SystemExit(f"recovery acceptance checks failed: {failed!r}")
 
     output_dir = (
         args.output_dir.resolve()

@@ -38,8 +38,16 @@
     "executionHorizonMs": 5000,
     // 单次规划允许使用的最长计算时间。
     "planningTimeoutMs": 1000,
+    // 提前结束搜索，为候选选择、复制预留和结果组装保留 50 毫秒。
+    "planningDeadlineGuardMs": 50,
     // 取货、放货和撤离阶段各保留多少条候选空间路线。
     "candidateRouteCount": 3,
+    // 先只调度最短路线；不可行或等待超过阈值时再逐层展开备用路线。
+    "progressiveRouteSearch": true,
+    // 最短路线等待不超过 5 秒时不再计算第 2/3 条路线。
+    "routeExpansionWaitThresholdMs": 5000,
+    // 用自由流完成时间下界跳过不可能优于当前最优解的路线组合。
+    "routeBranchAndBound": true,
     // 所有计算得到的通行时间向上取整到该毫秒粒度。
     "timeQuantumMs": 100,
     // 单个候选路线组合最多尝试多少次整体延时。
@@ -66,6 +74,12 @@
     "defaultPolicy": "top_k",
     // 每轮最多评估多少个互不相同的车辆全序。
     "priorityCandidateCount": 5,
+    // 只在共享未来资源的车辆连通分量内改变优先级。
+    "localConflictPlanning": true,
+    // 构建冲突图时，每个任务阶段查看前多少条空间路线。
+    "conflictRouteLookaheadCount": 1,
+    // RL 只决定每个局部冲突分量最前面的多少辆车，其余沿用拥堵基线。
+    "rlPriorityPrefixCount": 2,
     // Top-K 候选的生成顺序；重复的全序会自动去重，并用可复现随机扰动补足。
     "priorityStrategies": [
       "task_age",

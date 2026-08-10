@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from masp.scenario import (  # noqa: E402
-    build_phase3_plans,
+    build_dispatch_plans,
     build_simulator,
     load_json,
 )
@@ -70,7 +70,7 @@ def execute_policy(
     rl_candidate_count: int | None = None,
     rl_allow_deviation: bool = False,
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
-    planning, planned_scenario = build_phase3_plans(
+    planning, planned_scenario = build_dispatch_plans(
         scenario,
         model,
         conflicts,
@@ -270,13 +270,13 @@ def run_benchmark(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run MASP phase 3 rolling-horizon priority coordination"
+        description="Run MASP rolling-horizon dispatch and priority coordination"
     )
     parser.add_argument(
         "scenario",
         nargs="?",
         type=Path,
-        default=ROOT / "scenarios/phase3-rh-pp-benchmark.json",
+        default=ROOT / "scenarios/rolling-dispatch-benchmark.json",
     )
     parser.add_argument("--policy", choices=POLICIES)
     parser.add_argument("--seed", type=int)
@@ -284,7 +284,7 @@ def main() -> None:
     parser.add_argument(
         "--rl-checkpoint",
         type=Path,
-        help="Phase 5 PPO checkpoint; invalid or missing checkpoints use congestion fallback",
+        help="PPO priority checkpoint; invalid or missing checkpoints use congestion fallback",
     )
     parser.add_argument(
         "--rl-candidates",
@@ -374,7 +374,7 @@ def main() -> None:
             rl_allow_deviation=args.rl_allow_deviation,
         )
         if not benchmark["accepted"]:
-            raise SystemExit("phase 3 benchmark acceptance checks failed")
+            raise SystemExit("dispatch benchmark acceptance checks failed")
 
     compact_summary = {
         "schemaVersion": 1,
@@ -391,6 +391,14 @@ def main() -> None:
                 "priorityCandidatesEvaluated",
                 "feasiblePriorityCandidateCount",
                 "insertedWaitMs",
+                "routeCombinationsTried",
+                "routeCombinationsPruned",
+                "scheduleAttempts",
+                "maxRouteExpansionLevel",
+                "planningDeadlineExhaustedCount",
+                "conflictComponentCount",
+                "coupledConflictComponentCount",
+                "largestConflictComponent",
                 "planningLatencyMs",
                 "planningTimeoutCount",
                 "planningPeriodMissCount",

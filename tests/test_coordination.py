@@ -8,12 +8,13 @@ from jsonschema import Draft202012Validator
 
 from masp.domain import LoadState, SegmentKind, TransportTask, Vehicle
 from masp.motion import EdgeTravelTimeModel
-from masp.phase3 import CandidateScore, RollingHorizonPlanner
+from masp.coordination import CandidateScore, RollingHorizonPlanner
+from masp.reservations import ReservationTable
 from masp.routing import RouteProvider
 from masp.scenario import (
-    build_phase3_plans,
+    build_dispatch_plans,
     build_simulator,
-    validate_phase3_scenario_document,
+    validate_dispatch_scenario_document,
 )
 from masp.topology import MapTopology
 from masp.sipp import SippPlanningError
@@ -25,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="module")
-def phase3_documents():
+def dispatch_documents():
     return (
         read_json("generated/xiate-unified-map-model.json"),
         read_json("generated/xiate-conflict-resources.json"),
@@ -37,10 +38,10 @@ def phase3_documents():
 
 
 @pytest.fixture(scope="module")
-def phase3_top_k_run(phase3_documents):
-    scenario = read_json("scenarios/phase3-rh-pp-benchmark.json")
-    planning, planned = build_phase3_plans(
-        scenario, *phase3_documents, ROOT / "schemas"
+def dispatch_top_k_run(dispatch_documents):
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
+    planning, planned = build_dispatch_plans(
+        scenario, *dispatch_documents, ROOT / "schemas"
     )
     return scenario, planning, planned
 
@@ -52,9 +53,9 @@ def test_candidate_score_uses_lexicographic_throughput_priority() -> None:
     assert more_dropoffs.ordering_key() < less_dropoffs.ordering_key()
 
 
-def test_random_priority_orders_are_reproducible(phase3_documents) -> None:
-    model, conflicts, workstations, profiles, scheduler, zones = phase3_documents
-    scenario = read_json("scenarios/phase3-rh-pp-benchmark.json")
+def test_random_priority_orders_are_reproducible(dispatch_documents) -> None:
+    model, conflicts, workstations, profiles, scheduler, zones = dispatch_documents
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
     topology = MapTopology(model, conflicts, workstations)
     planner = RollingHorizonPlanner(
         topology, model, profiles, scheduler, zones, policy="random", seed=17
@@ -77,14 +78,74 @@ def test_random_priority_orders_are_reproducible(phase3_documents) -> None:
     )
 
 
-def test_idle_cycles_jump_to_the_next_release_time(phase3_documents) -> None:
-    scenario = deepcopy(read_json("scenarios/phase3-rh-pp-benchmark.json"))
+def test_priority_candidates_only_permute_local_conflict_components(
+    dispatch_documents, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model, conflicts, workstations, profiles, scheduler, zones = dispatch_documents
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
+    planner = RollingHorizonPlanner(
+        MapTopology(model, conflicts, workstations, zones),
+        model,
+        profiles,
+        scheduler,
+        zones,
+        policy="top_k",
+        seed=0,
+    )
+    vehicles = [Vehicle.from_dict(item) for item in scenario["vehicles"]]
+    defaults = scheduler["serviceDefaults"]
+    tasks = [
+        TransportTask.from_dict(
+            item,
+            int(defaults["pickupServiceMs"]),
+            int(defaults["dropoffServiceMs"]),
+        )
+        for item in scenario["tasks"]
+        if item["releaseTimeMs"] == 0
+    ]
+    projections, tasks_by_id = planner._validate_inputs(vehicles, tasks)
+    proposals = planner.allocator.assign(vehicles, tasks, 0)
+    assert len(proposals) >= 3
+    coupled_ids = {proposals[0].vehicle_id, proposals[1].vehicle_id}
+
+    def fake_resources(proposal, *_args):
+        if proposal.vehicle_id in coupled_ids:
+            return frozenset({"shared"})
+        return frozenset({f"private:{proposal.vehicle_id}"})
+
+    monkeypatch.setattr(planner, "_proposal_resource_ids", fake_resources)
+    components = planner._conflict_components(
+        proposals, tasks_by_id, projections
+    )
+    orders = planner._priority_orders(
+        proposals,
+        tasks_by_id,
+        ReservationTable(),
+        projections,
+        0,
+        0,
+        0,
+    )
+
+    assert tuple(len(component) for component in components) == (
+        2,
+        *(1 for _ in proposals[2:]),
+    )
+    assert len(orders) <= 2
+    for _, order in orders:
+        assert tuple(item.vehicle_id for item in order[2:]) == tuple(
+            item.vehicle_id for item in proposals[2:]
+        )
+
+
+def test_idle_cycles_jump_to_the_next_release_time(dispatch_documents) -> None:
+    scenario = deepcopy(read_json("scenarios/rolling-dispatch-benchmark.json"))
     scenario["tasks"] = scenario["tasks"][:1]
     scenario["tasks"][0]["releaseTimeMs"] = 1234
     scenario["endTimeMs"] = 500000
 
-    planning, _ = build_phase3_plans(
-        scenario, *phase3_documents, ROOT / "schemas", policy="congestion", seed=0
+    planning, _ = build_dispatch_plans(
+        scenario, *dispatch_documents, ROOT / "schemas", policy="congestion", seed=0
     )
 
     assert planning.unplanned_task_ids == ()
@@ -93,10 +154,10 @@ def test_idle_cycles_jump_to_the_next_release_time(phase3_documents) -> None:
 
 
 def test_failed_pairs_do_not_spin_without_a_future_state_change(
-    phase3_documents, monkeypatch: pytest.MonkeyPatch
+    dispatch_documents, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    model, conflicts, workstations, profiles, scheduler, zones = phase3_documents
-    scenario = read_json("scenarios/phase3-rh-pp-benchmark.json")
+    model, conflicts, workstations, profiles, scheduler, zones = dispatch_documents
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
     topology = MapTopology(model, conflicts, workstations, zones)
     planner = RollingHorizonPlanner(
         topology, model, profiles, scheduler, zones, policy="congestion", seed=0
@@ -125,10 +186,10 @@ def test_failed_pairs_do_not_spin_without_a_future_state_change(
 
 
 def test_top_k_rh_pp_is_safe_and_completes_stream(
-    phase3_documents, phase3_top_k_run
+    dispatch_documents, dispatch_top_k_run
 ) -> None:
-    scenario, planning, planned = phase3_top_k_run
-    model, conflicts, workstations, _, scheduler, _ = phase3_documents
+    scenario, planning, planned = dispatch_top_k_run
+    model, conflicts, workstations, _, scheduler, _ = dispatch_documents
     summary = planning.summary()
     first_decision = next(item for item in planning.cycles if item.candidates)
 
@@ -169,15 +230,15 @@ def test_top_k_rh_pp_is_safe_and_completes_stream(
 
 
 def test_congestion_baseline_throughput_is_not_worse_than_random(
-    phase3_documents,
+    dispatch_documents,
 ) -> None:
-    scenario = read_json("scenarios/phase3-rh-pp-benchmark.json")
-    model, conflicts, workstations, _, scheduler, _ = phase3_documents
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
+    model, conflicts, workstations, _, scheduler, _ = dispatch_documents
     throughput = {}
     for policy in ("congestion", "random"):
-        planning, planned = build_phase3_plans(
+        planning, planned = build_dispatch_plans(
             scenario,
-            *phase3_documents,
+            *dispatch_documents,
             ROOT / "schemas",
             policy=policy,
             seed=0,
@@ -196,30 +257,30 @@ def test_congestion_baseline_throughput_is_not_worse_than_random(
     assert throughput["congestion"] >= throughput["random"]
 
 
-def test_phase3_schema_is_valid_and_example_matches() -> None:
-    schema = read_json("schemas/phase3-scenario.schema.json")
+def test_coordination_schema_is_valid_and_example_matches() -> None:
+    schema = read_json("schemas/dispatch-scenario.schema.json")
     Draft202012Validator.check_schema(schema)
-    validate_phase3_scenario_document(
-        read_json("scenarios/phase3-rh-pp-benchmark.json"), ROOT / "schemas"
+    validate_dispatch_scenario_document(
+        read_json("scenarios/rolling-dispatch-benchmark.json"), ROOT / "schemas"
     )
 
 
 @pytest.mark.parametrize(
     ("scenario_path", "vehicle_count", "task_count"),
     (
-        ("scenarios/phase3-realistic-multi-fleet.json", 14, 32),
-        ("scenarios/phase3-realistic-multi-fleet-interactive.json", 4, 6),
+        ("scenarios/realistic-multi-fleet.json", 14, 32),
+        ("scenarios/interactive-multi-fleet.json", 4, 6),
     ),
 )
 def test_realistic_multi_fleet_scenarios_are_valid(
-    phase3_documents,
+    dispatch_documents,
     scenario_path: str,
     vehicle_count: int,
     task_count: int,
 ) -> None:
-    model, conflicts, workstations, _, scheduler, zones = phase3_documents
+    model, conflicts, workstations, _, scheduler, zones = dispatch_documents
     scenario = read_json(scenario_path)
-    validate_phase3_scenario_document(scenario, ROOT / "schemas")
+    validate_dispatch_scenario_document(scenario, ROOT / "schemas")
     assert len(scenario["vehicles"]) == vehicle_count
     assert len(scenario["tasks"]) == task_count
 
@@ -238,17 +299,17 @@ def test_realistic_multi_fleet_scenarios_are_valid(
 
 
 def test_realistic_pressure_tasks_are_individually_schedulable(
-    phase3_documents,
+    dispatch_documents,
 ) -> None:
-    scenario = read_json("scenarios/phase3-realistic-multi-fleet.json")
+    scenario = read_json("scenarios/realistic-multi-fleet.json")
 
     for task in scenario["tasks"]:
         single_task = deepcopy(scenario)
         single_task["scenarioId"] = f"single-{task['taskId']}"
         single_task["tasks"] = [task]
-        planning, _ = build_phase3_plans(
+        planning, _ = build_dispatch_plans(
             single_task,
-            *phase3_documents,
+            *dispatch_documents,
             ROOT / "schemas",
             policy="congestion",
             seed=0,
@@ -257,10 +318,10 @@ def test_realistic_pressure_tasks_are_individually_schedulable(
 
 
 def test_realistic_pressure_scenario_exercises_jack_shared_corridors(
-    phase3_documents,
+    dispatch_documents,
 ) -> None:
-    model, _, _, profiles, scheduler, _ = phase3_documents
-    scenario = read_json("scenarios/phase3-realistic-multi-fleet.json")
+    model, _, _, profiles, scheduler, _ = dispatch_documents
+    scenario = read_json("scenarios/realistic-multi-fleet.json")
     routes = RouteProvider(
         model,
         EdgeTravelTimeModel(

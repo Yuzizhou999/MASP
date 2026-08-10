@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenarioId": "phase2-continuous-tasks",
+  "scenarioId": "continuous-task-planning",
   "seed": 0,
   "endTimeMs": 400000,
   "vehicles": [
@@ -21,7 +21,7 @@
   ],
   "tasks": [
     {
-      "taskId": "phase2-task-001",
+      "taskId": "planning-task-001",
       "releaseTimeMs": 0,
       "pickupNodeId": "fork:AP1123",
       "dropoffNodeId": "fork:AP2121",
@@ -31,7 +31,7 @@
       "priorityClass": 0
     },
     {
-      "taskId": "phase2-task-002",
+      "taskId": "planning-task-002",
       "releaseTimeMs": 5000,
       "pickupNodeId": "fork:AP1119",
       "dropoffNodeId": "fork:AP1126",
@@ -41,7 +41,7 @@
       "priorityClass": 1
     },
     {
-      "taskId": "phase2-task-003",
+      "taskId": "planning-task-003",
       "releaseTimeMs": 60000,
       "pickupNodeId": "fork:AP1113",
       "dropoffNodeId": "fork:AP1116",

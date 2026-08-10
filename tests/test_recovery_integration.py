@@ -7,8 +7,8 @@ import pytest
 
 from masp.domain import DomainError, LoadState, TransportTask, Vehicle
 from masp.motion import EdgeTravelTimeModel
-from masp.phase3 import PriorityStrategy, RollingHorizonPlanner
-from masp.phase4 import run_phase4_scenario, validate_phase4_scenario_document
+from masp.coordination import PriorityStrategy, RollingHorizonPlanner
+from masp.recovery_scenario import run_recovery_scenario, validate_recovery_scenario_document
 from masp.recovery import RecoveryController, RecoveryPlanningError, RecoveryVehicle
 from masp.reservations import ReservationTable
 from masp.routing import RouteProvider
@@ -20,27 +20,27 @@ from conftest import read_json
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_scenario(scenario, phase0_assets):
-    return run_phase4_scenario(
+def run_scenario(scenario, repository_assets):
+    return run_recovery_scenario(
         scenario,
-        phase0_assets["model"],
-        phase0_assets["conflicts"],
-        phase0_assets["workstations"],
-        phase0_assets["profiles"],
-        phase0_assets["scheduler"],
-        phase0_assets["traffic_zones"],
+        repository_assets["model"],
+        repository_assets["conflicts"],
+        repository_assets["workstations"],
+        repository_assets["profiles"],
+        repository_assets["scheduler"],
+        repository_assets["traffic_zones"],
         ROOT / "schemas",
     )
 
 
-def test_phase4_real_map_scenario_is_deterministic_and_accepted(
-    phase0_assets,
+def test_recovery_real_map_scenario_is_deterministic_and_accepted(
+    repository_assets,
 ) -> None:
-    scenario = read_json("scenarios/phase4-deadlock-recovery.json")
-    validate_phase4_scenario_document(scenario, ROOT / "schemas")
+    scenario = read_json("scenarios/deadlock-recovery.json")
+    validate_recovery_scenario_document(scenario, ROOT / "schemas")
 
-    first = run_scenario(scenario, phase0_assets)
-    second = run_scenario(scenario, phase0_assets)
+    first = run_scenario(scenario, repository_assets)
+    second = run_scenario(scenario, repository_assets)
 
     assert first.accepted is True
     assert first.to_dict() == second.to_dict()
@@ -65,30 +65,30 @@ def test_phase4_real_map_scenario_is_deterministic_and_accepted(
 
 
 def test_unrecoverable_ring_shortest_backtracks_all_exceed_distance_limit(
-    phase0_assets,
+    repository_assets,
 ) -> None:
-    scenario = read_json("scenarios/phase4-deadlock-recovery.json")
+    scenario = read_json("scenarios/deadlock-recovery.json")
     case = scenario["unrecoverableDeadlock"]
     topology = MapTopology(
-        phase0_assets["model"],
-        phase0_assets["conflicts"],
-        phase0_assets["workstations"],
-        phase0_assets["traffic_zones"],
+        repository_assets["model"],
+        repository_assets["conflicts"],
+        repository_assets["workstations"],
+        repository_assets["traffic_zones"],
     )
     travel_times = EdgeTravelTimeModel(
-        phase0_assets["model"],
-        phase0_assets["profiles"],
-        int(phase0_assets["scheduler"]["planner"].get("timeQuantumMs", 100)),
+        repository_assets["model"],
+        repository_assets["profiles"],
+        int(repository_assets["scheduler"]["planner"].get("timeQuantumMs", 100)),
     )
-    routes = RouteProvider(phase0_assets["model"], travel_times)
+    routes = RouteProvider(repository_assets["model"], travel_times)
     controller = RecoveryController(
         topology,
         travel_times,
-        phase0_assets["scheduler"],
-        phase0_assets["traffic_zones"],
+        repository_assets["scheduler"],
+        repository_assets["traffic_zones"],
     )
     max_distance_m = float(
-        phase0_assets["scheduler"]["traffic"]["reverse"]["maxDistanceM"]
+        repository_assets["scheduler"]["traffic"]["reverse"]["maxDistanceM"]
     )
     rejection_codes: dict[str, str] = {}
     distances_m: dict[str, float] = {}
@@ -143,7 +143,7 @@ def test_unrecoverable_ring_shortest_backtracks_all_exceed_distance_limit(
         "ring-2": "recovery.distance.exceeded",
         "ring-3": "recovery.distance.exceeded",
     }
-    result = run_scenario(scenario, phase0_assets)
+    result = run_scenario(scenario, repository_assets)
     assert result.unrecoverable_deadlock.decision.action == "safety_stop"
     assert result.unrecoverable_deadlock.decision.plan is None
     assert (
@@ -152,23 +152,23 @@ def test_unrecoverable_ring_shortest_backtracks_all_exceed_distance_limit(
     )
 
 
-def test_starvation_age_promotes_vehicle_in_task_age_order(phase0_assets) -> None:
-    scenario = read_json("scenarios/phase3-rh-pp-benchmark.json")
+def test_starvation_age_promotes_vehicle_in_task_age_order(repository_assets) -> None:
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
     topology = MapTopology(
-        phase0_assets["model"],
-        phase0_assets["conflicts"],
-        phase0_assets["workstations"],
-        phase0_assets["traffic_zones"],
+        repository_assets["model"],
+        repository_assets["conflicts"],
+        repository_assets["workstations"],
+        repository_assets["traffic_zones"],
     )
     planner = RollingHorizonPlanner(
         topology,
-        phase0_assets["model"],
-        phase0_assets["profiles"],
-        phase0_assets["scheduler"],
-        phase0_assets["traffic_zones"],
+        repository_assets["model"],
+        repository_assets["profiles"],
+        repository_assets["scheduler"],
+        repository_assets["traffic_zones"],
     )
     vehicles = [Vehicle.from_dict(item) for item in scenario["vehicles"]]
-    defaults = phase0_assets["scheduler"]["serviceDefaults"]
+    defaults = repository_assets["scheduler"]["serviceDefaults"]
     tasks = [
         TransportTask.from_dict(
             item,
@@ -198,29 +198,29 @@ def test_starvation_age_promotes_vehicle_in_task_age_order(phase0_assets) -> Non
     assert order[0].vehicle_id == promoted_vehicle_id
 
 
-def test_phase4_rejects_unknown_topology_evidence(phase0_assets) -> None:
-    scenario = deepcopy(read_json("scenarios/phase4-deadlock-recovery.json"))
+def test_recovery_rejects_unknown_topology_evidence(repository_assets) -> None:
+    scenario = deepcopy(read_json("scenarios/deadlock-recovery.json"))
     scenario["recoverableDeadlock"]["evidenceEdgeIds"][0] = "fork:missing-edge"
 
     with pytest.raises(DomainError) as caught:
-        run_scenario(scenario, phase0_assets)
+        run_scenario(scenario, repository_assets)
 
-    assert caught.value.code == "phase4.deadlock.evidence_edge"
+    assert caught.value.code == "recovery.deadlock.evidence_edge"
 
 
-def test_phase4_rejects_existing_but_unrelated_topology_evidence(
-    phase0_assets,
+def test_recovery_rejects_existing_but_unrelated_topology_evidence(
+    repository_assets,
 ) -> None:
-    scenario = deepcopy(read_json("scenarios/phase4-deadlock-recovery.json"))
+    scenario = deepcopy(read_json("scenarios/deadlock-recovery.json"))
     scenario["recoverableDeadlock"]["evidenceEdgeIds"] = [
         "fork:edge-68",
         "fork:edge-370",
     ]
 
     with pytest.raises(DomainError) as caught:
-        run_scenario(scenario, phase0_assets)
+        run_scenario(scenario, repository_assets)
 
-    assert caught.value.code == "phase4.deadlock.evidence_resource"
+    assert caught.value.code == "recovery.deadlock.evidence_resource"
 
 
 @pytest.mark.parametrize(
@@ -230,28 +230,28 @@ def test_phase4_rejects_existing_but_unrelated_topology_evidence(
             0,
             "currentEdgeId",
             "fork:edge-68",
-            "phase4.recovery_vehicle.evidence_edge",
+            "recovery.recovery_vehicle.evidence_edge",
         ),
         (
             1,
             "currentNodeId",
             "fork:PP1175",
-            "phase4.recovery_vehicle.evidence_node",
+            "recovery.recovery_vehicle.evidence_node",
         ),
     ],
 )
-def test_phase4_recovery_positions_must_belong_to_evidence_edges(
-    phase0_assets,
+def test_recovery_recovery_positions_must_belong_to_evidence_edges(
+    repository_assets,
     vehicle_index: int,
     position_field: str,
     position_value: str,
     expected_code: str,
 ) -> None:
-    scenario = deepcopy(read_json("scenarios/phase4-deadlock-recovery.json"))
+    scenario = deepcopy(read_json("scenarios/deadlock-recovery.json"))
     vehicle = scenario["recoverableDeadlock"]["recoveryVehicles"][vehicle_index]
     vehicle[position_field] = position_value
 
     with pytest.raises(DomainError) as caught:
-        run_scenario(scenario, phase0_assets)
+        run_scenario(scenario, repository_assets)
 
     assert caught.value.code == expected_code

@@ -1,4 +1,7 @@
-# MASP 持续任务多车调度系统设计
+# MASP 持续任务多车调度架构与实现记录
+
+> 当前代码已按领域责任命名；文档后半保留阶段 0-7 仅作历史实施与验收记录。
+> 当前入口和目录规范以根目录 `README.md` 为准。
 
 文档状态：Draft v1.0
 
@@ -1424,15 +1427,15 @@ CommitManager.commit(candidateBundle, expectedVersions) -> CommitResult
 - `generated/xiate-workstations.json` 已覆盖全部 133 个 AP，取放货服务默认各 5000 ms，服务期间独占节点。
 - `config/scheduler.json`、`config/initial-vehicles.json` 和 `config/traffic-zones.json` 已固化阶段 0 运行配置。
 - `schemas/` 已提供任务、车辆、调度器、作业点和交通区域的 JSON Schema。
-- `tools/build_phase0.py` 负责一键重建和语义校验，`tools/validate_phase0.py` 负责独立 Schema 与跨文件校验。
+- `tools/build_repository.py` 负责一键重建和语义校验，`tools/validate_repository.py` 负责独立 Schema 与跨文件校验。
 - 当前 552 个节点、1204 条边、6266 对冲突资源、14 台初始车辆和 15 个恢复点均通过校验。
 - 安全参数仍为占位值，启动保护会拒绝真实车辆模式；当前交付物仅用于仿真。
 
 复现命令：
 
 ```powershell
-python tools/build_phase0.py
-python tools/validate_phase0.py
+python tools/build_repository.py
+python tools/validate_repository.py
 pytest -q
 ```
 
@@ -1455,13 +1458,13 @@ pytest -q
 - `masp/plans.py` 校验边方向、车型、路径连续性、载荷、等待权限、服务时长和取放货顺序。
 - `masp/simulator.py` 执行显式计划，输出事件日志、回放摘要、任务吞吐及车辆状态时间。
 - `schemas/plan.schema.json` 和 `schemas/simulation-scenario.schema.json` 定义阶段 1 输入格式。
-- `scenarios/phase1-single-vehicle.json` 已在实际统一地图上完成一次取货和放货，并在放货后从禁止等待的 AP 撤离到 PP；自动任务分配与找路仍属于阶段 2。
+- `scenarios/explicit-single-vehicle.json` 已在实际统一地图上完成一次取货和放货，并在放货后从禁止等待的 AP 撤离到 PP；自动任务分配与找路仍属于阶段 2。
 - 两车重叠占用同一冲突资源时，整个预留批次会被拒绝；采用半开区间后，前车结束时刻等于后车开始时刻可以安全交接。
 
 复现命令：
 
 ```powershell
-python tools/run_phase1.py scenarios/phase1-single-vehicle.json
+python tools/simulate_explicit_plan.py scenarios/explicit-single-vehicle.json
 pytest -q
 ```
 
@@ -1482,15 +1485,15 @@ pytest -q
 - `masp/motion.py` 按空载/载货、前进/倒退、边限速、曲率、加减速和旋转约束估算通行时间，并向上取整到调度时间粒度。
 - `masp/routing.py` 在对应车型的有向子图上生成 K 条候选路线。
 - `masp/sipp.py` 对道路、冲突区、节点和工位求共同安全区间，只在策略允许的节点显式等待；AP 服务到达即开始，放货后自动撤离到配置的 PP/CP 恢复点。
-- `masp/phase2.py` 按任务释放时间持续规划，车辆完成任务并撤离后可再次接单，旧停车尾预留与新计划使用原子替换。
-- `schemas/phase2-scenario.schema.json`、`scenarios/phase2-continuous-tasks.json` 和 `tools/run_phase2.py` 提供可复现的持续任务流输入与运行入口。
+- `masp/planning.py` 按任务释放时间持续规划，车辆完成任务并撤离后可再次接单，旧停车尾预留与新计划使用原子替换。
+- `schemas/planning-scenario.schema.json`、`scenarios/continuous-task-planning.json` 和 `tools/simulate_planning.py` 提供可复现的持续任务流输入与运行入口。
 - 示例中 2 辆车完成 3 个分时任务，其中 1 辆车连续执行 2 个任务；自动等待仅发生在允许等待的 PP，预留冲突为 0。
 - 本阶段仍为仿真验证；RH-PP 滚动窗口、Top-K 优先级协调、吞吐基准比较属于阶段 3。
 
 复现命令：
 
 ```powershell
-python tools/run_phase2.py scenarios/phase2-continuous-tasks.json
+python tools/simulate_planning.py scenarios/continuous-task-planning.json
 pytest -q
 ```
 
@@ -1507,11 +1510,11 @@ pytest -q
 
 实施状态（2026-08-06）：已完成仿真基线。
 
-- `masp/phase3.py` 按 `planningPeriodMs` 周期处理已释放任务，保留既有安全预留作为硬约束，并为同轮车辆生成任务年龄、最短剩余处理时间、拥堵、上一轮顺序和可复现随机顺序。
+- `masp/coordination.py` 按 `planningPeriodMs` 周期处理已释放任务，保留既有安全预留作为硬约束，并为同轮车辆生成任务年龄、最短剩余处理时间、拥堵、上一轮顺序和可复现随机顺序。
 - 每个不同全序独立运行连续时间 SIPP；候选之间使用预留表副本隔离，选中后才原子替换正式预留。
 - 候选按窗口内放货数、取货数、逾期、排队、等待、空驶和完成时刻进行词典序评分，安全不可行候选直接拒绝，不参与软权重交换。
 - 名义 `executionHorizonMs` 会延伸到下一个允许等待节点并记录为 `safeUntilMs`。当前 LM/AP 禁止等待，因此部分车辆需要一次承诺到 PP/CP；完整遥测反馈和执行中计划修订不属于本阶段仿真入口。
-- `scenarios/phase3-rh-pp-benchmark.json` 使用 3 辆车和 5 个持续任务。Top-K 完成 5/5 任务，预留冲突为 0，共评估 7 个优先级候选，其中 4 个可行。
+- `scenarios/rolling-dispatch-benchmark.json` 使用 3 辆车和 5 个持续任务。Top-K 完成 5/5 任务，预留冲突为 0，共评估 7 个优先级候选，其中 4 个可行。
 - 拥堵基线与 3 个随机种子均达到 36 次放货/小时；拥堵基线插入等待 49,800 ms，随机基线平均 70,600 ms，因此吞吐不低于随机且等待更少。
 - 本机 Top-K 规划耗时 p95 约 1.9 秒，低于 5 秒规划周期；最慢首轮约 5.9 秒，出现 1 次周期超时和 2 次超过暂定 1 秒规划超时，扩大车辆规模前仍需并行候选求解和性能优化。
 - 阶段 4 的等待图、死锁环检测、窄路原子前瞻和倒退恢复尚未实现；阶段 3 不宣称具备死锁恢复保证。
@@ -1519,7 +1522,7 @@ pytest -q
 复现命令：
 
 ```powershell
-python tools/run_phase3.py scenarios/phase3-rh-pp-benchmark.json
+python tools/simulate_dispatch.py scenarios/rolling-dispatch-benchmark.json
 pytest -q
 ```
 
@@ -1540,16 +1543,16 @@ pytest -q
 - `masp/reservations.py` 支持带相对时间偏移的原子资源束查询并返回结构化 blocker；查询不修改正式预留表，完整批次通过后才提交。安全冻结会原子安装持久化门禁、保留冻结时已经执行中的占用，并撤销所有受影响计划在冻结时刻之后的完整预留尾部。
 - `masp/sipp.py` 在车辆越过窄路入口前，一次性排程到区域出口后的下一个合法等待点。任一后续资源被占用时，整段动作统一延迟到入口外，区域内不会插入普通等待。
 - `config/traffic-zones.json` 启用了真实 `jack:PP363`—`jack:PP365` 窄路。入口边本身没有共同几何冲突，但共享区域资源会阻止两辆车同时进入。
-- `masp/deadlock.py` 只根据“无合法替代动作”的结构化 blocker 建立等待图，使用强连通分量检测两车或多车环，并按 `starvationAgeStepMs` 产生车辆优先级年龄；报告同时捕获预留表版本，恢复提交前若版本变化则拒绝陈旧结论。`masp/phase3.py` 的任务年龄顺序可接收该提升值。
+- `masp/deadlock.py` 只根据“无合法替代动作”的结构化 blocker 建立等待图，使用强连通分量检测两车或多车环，并按 `starvationAgeStepMs` 产生车辆优先级年龄；报告同时捕获预留表版本，恢复提交前若版本变化则拒绝陈旧结论。`masp/coordination.py` 的任务年龄顺序可接收该提升值。
 - `masp/recovery.py` 使用独立恢复计划验证动态倒退，不复用要求完整取货/放货的运输 `PlanValidator`。恢复动作检查倒退模式、载荷许可、最大距离、最大时长、恢复点容量和完整冲突资源，然后先冻结环资源、仅豁免选中的恢复车辆，再原子替换其计划。确定性事务 ID 支持控制器重启后识别已提交决策；失败回滚使用版本比较并只撤销本次恢复事务，不盲目恢复可能已经失效的旧未来计划。
 - 真实 `fork:edge-323` 用例从 99% 边进度沿原路倒退 4.76388 m 到 `fork:PP1173`；该方向没有地图反向边。两车等待环被检测后完成恢复预留，重复同一环超过阈值会转为安全停止。
 - 真实四节点环 `LM1028 → LM1031 → LM2472 → LM2473 → LM1028` 的每辆车都配置了可验证的真实地图倒退候选，但最短候选均超过 5 m 上限，因此输出稳定安全停止并冻结相关节点，而不是伪造可行路径。
-- `schemas/phase4-scenario.schema.json`、`scenarios/phase4-deadlock-recovery.json` 和 `tools/run_phase4.py` 提供确定性验收入口；主场景的八项检查全部通过。
+- `schemas/recovery-scenario.schema.json`、`scenarios/deadlock-recovery.json` 和 `tools/validate_recovery.py` 提供确定性验收入口；主场景的八项检查全部通过。
 
 复现命令：
 
 ```powershell
-python tools/run_phase4.py scenarios/phase4-deadlock-recovery.json
+python tools/validate_recovery.py scenarios/deadlock-recovery.json
 pytest -q
 ```
 
@@ -1581,7 +1584,7 @@ pytest -q
   checkpoint/推理/超时/排列错误会回退到 congestion，合法但不可行的 RL
   候选也会追加一次 congestion 安全基线评估。默认不允许 RL 替换可行的
   congestion guardian，只有显式传入 `--rl-allow-deviation` 才进入实验模式。
-- `tools/train_phase5.py --state-source rolling` 会先运行 congestion 基线，
+- `tools/train_priority_policy.py --state-source rolling` 会先运行 congestion 基线，
   从真实滚动周期截取训练状态；`--behavior-clone-epochs` 用 congestion
   排列预热 pointer decoder，再进入 PPO。交互与压力场景混合采集得到 97 个
   状态，避免把静态快照中的不可用车辆组合当成训练样本。
@@ -1613,9 +1616,31 @@ pytest -q
 - `OnlineDispatchRuntime` 按仿真时钟接收任务、每 `planningPeriodMs` 触发规划、发布带车辆/计划版本的提案，并要求显式 ACK 后才向执行模拟器和正式预留表原子安装计划。重复任务、重复 ACK 和陈旧车辆版本均有稳定错误码。
 - `DeterministicSimulator.submit_task()`、`add_plan()` 和 `run_until()` 支持运行中注入任务与已确认计划，不再要求启动前装载完整运输计划。空闲车辆遥测可用更高 revision 修正当前位置；执行中计划替换仍明确拒绝。
 - 在线状态持久化不可行车辆-任务组合的重试冷却，避免每 5 秒重复执行相同 SIPP 搜索。14 车 32 任务共享走廊压力档完成 `32/32`，吞吐 `76.8 dropoffs/hour`，预留冲突 `0`；规划 p95 为 `477.959 ms`，但最慢周期 `5428.691 ms`，仍有 1 次超过 5 秒周期。
-- `tools/run_phase6_online.py` 输出在线计划、ACK 记录、事件日志、规划摘要和可视化兼容的运行目录。
+- `tools/simulate_online_dispatch.py` 输出在线计划、ACK 记录、事件日志、规划摘要和可视化兼容的运行目录。
 
 当前边界：计划提案已同时输出 `nominalUntilMs`、延伸到安全节点的 `safeUntilMs` 和可下发段，但 MVP 模拟器在 ACK 后仍执行完整的不可拆分取放货计划。执行中遥测偏差、已下发尾部撤销、部分计划续接、HTTP/gRPC 接口、控制器 ACK 超时与重连尚未实现，因此不能视为现场实时控制器。
+
+### 阶段 7：局部冲突规划与 RL 前缀优化
+
+交付物：
+
+- 渐进式候选路线、完成时间下界剪枝和恢复路线缓存。
+- 规划周期硬 deadline 与安全可行前缀返回。
+- 基于未来资源重叠图的局部冲突分量排序。
+- RL 局部 Top-M 前缀、冲突图消息聚合和搜索计算量奖励。
+- ReservationTable 结构化快照克隆和新增性能诊断。
+
+当前实施状态（2026-08-07）：已完成并通过压力回归。
+
+- `ContinuousTimeSippPlanner` 先尝试三阶段各自的第 1 条路线；只有无解或计划等待超过 `routeExpansionWaitThresholdMs` 时才展开第 2/3 条路线。组合在完整调度前使用自由流完成时间下界剪枝，恢复点路线按车型和放货点缓存。
+- `RollingHorizonPlanner` 根据最短候选路线涉及的边、节点、工位、几何冲突和交通区资源构建车辆冲突图。Top-K 启发式和 RL 只在连通分量内部改变顺序；单车分量保持稳定顺序，不产生无意义的全局排列。
+- `planningTimeoutMs` 现在是协作式硬 deadline。规划器为结果选择和预留组装保留 `planningDeadlineGuardMs`，超时时返回已经通过 SIPP、`PlanValidator` 和预留检查的安全前缀；没有安全前缀时保留现状并对超时车辆任务对做一个周期的冷却。
+- RL 输入新增直接资源冲突矩阵，在路径/车辆编码之间执行图消息聚合。Pointer decoder 只生成局部 `rlPriorityPrefixCount` 个动作，其余候选保持 congestion 基线尾部；无多车冲突分量时不执行 RL 推理。训练状态也按局部冲突分量采集，奖励额外惩罚路线组合和 SIPP 尝试次数。
+- `ReservationTable.clone()` 直接复制已经验证的不可变预留记录和资源索引，不再为每个优先级候选重新插入全部历史预留并重复执行冲突检查。后续候选修改发生在独立索引副本上，不影响正式预留表。
+- 14 车 32 任务在线共享走廊压力档仍完成 `32/32`，吞吐 `76.8 dropoffs/hour`，资源冲突 `0`。相对阶段 6 基线，路线组合从 `678` 降至 `255`（`-62.4%`），SIPP 尝试从 `3285` 降至 `1313`（`-60.0%`），规划 p95 从 `477.959 ms` 降至 `301.791 ms`（`-36.9%`），最慢周期从 `5428.691 ms` 降至 `951.644 ms`（`-82.5%`），规划超时和 5 秒周期 miss 均为 `0`。
+- 完整自动测试为 `108 passed`；RL 烟雾测试覆盖局部样本采集、行为克隆、PPO、Top-2 前缀 checkpoint、回载推理和零冲突回放。
+
+当前边界：空间候选仍由 Yen 路线后接连续时间安全调度，不是一次搜索全部空间分支的最优联合 MAPF；硬 deadline 以可预测实时性优先，允许复杂任务延后到下一周期继续规划。现场启用 RL 前仍需要用生产任务分布重新训练并通过独立吞吐验收。
 
 ## 28. 关键设计决策
 

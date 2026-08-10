@@ -37,7 +37,7 @@ class DeadlockCaseResult:
 
 
 @dataclass(frozen=True)
-class Phase4Result:
+class RecoveryScenarioResult:
     scenario_id: str
     zone_admission: dict[str, object]
     recoverable_deadlock: DeadlockCaseResult
@@ -104,10 +104,10 @@ class Phase4Result:
         }
 
 
-def validate_phase4_scenario_document(
+def validate_recovery_scenario_document(
     scenario: dict[str, Any], schemas_dir: Path
 ) -> None:
-    schema = _load_json(schemas_dir / "phase4-scenario.schema.json")
+    schema = _load_json(schemas_dir / "recovery-scenario.schema.json")
     errors = sorted(
         Draft202012Validator(schema).iter_errors(scenario),
         key=lambda item: list(item.absolute_path),
@@ -120,11 +120,11 @@ def validate_phase4_scenario_document(
         for part in error.absolute_path
     )
     raise DomainError(
-        "phase4.scenario.schema.invalid", f"scenario {path}: {error.message}"
+        "recovery.scenario.schema.invalid", f"scenario {path}: {error.message}"
     )
 
 
-def run_phase4_scenario(
+def run_recovery_scenario(
     scenario: dict[str, Any],
     model: dict[str, Any],
     conflicts: dict[str, Any],
@@ -133,13 +133,13 @@ def run_phase4_scenario(
     scheduler: dict[str, Any],
     traffic_zones: dict[str, Any],
     schemas_dir: Path,
-) -> Phase4Result:
-    validate_phase4_scenario_document(scenario, schemas_dir)
+) -> RecoveryScenarioResult:
+    validate_recovery_scenario_document(scenario, schemas_dir)
     now_ms = int(scenario["nowMs"])
     end_time_ms = int(scenario["endTimeMs"])
     if end_time_ms <= now_ms:
         raise DomainError(
-            "phase4.scenario.horizon",
+            "recovery.scenario.horizon",
             "endTimeMs must be greater than nowMs",
         )
     topology = MapTopology(model, conflicts, workstations, traffic_zones)
@@ -199,7 +199,7 @@ def run_phase4_scenario(
             and bool(unrecoverable.decision.freeze_reservation_ids)
         ),
     }
-    return Phase4Result(
+    return RecoveryScenarioResult(
         scenario_id=str(scenario["scenarioId"]),
         zone_admission=zone_admission,
         recoverable_deadlock=recoverable,
@@ -220,11 +220,11 @@ def _run_zone_admission(
     zone = topology.traffic_zones.zones_by_id.get(value["zoneId"])
     if zone is None:
         raise DomainError(
-            "phase4.zone.missing", f"unknown phase 4 zone {value['zoneId']!r}"
+            "recovery.zone.missing", f"unknown recovery zone {value['zoneId']!r}"
         )
     if value["blockingReservation"]["resourceId"] != zone.resource_id:
         raise DomainError(
-            "phase4.zone.blocker_resource",
+            "recovery.zone.blocker_resource",
             "zone admission blocker must occupy the configured zone resource",
         )
     edge_ids = tuple(value["edgeIds"])
@@ -233,7 +233,7 @@ def _run_zone_admission(
     for edge in edges:
         if edge["start"] != current_node_id:
             raise DomainError(
-                "phase4.zone.route_discontinuous", "zone intent route is discontinuous"
+                "recovery.zone.route_discontinuous", "zone intent route is discontinuous"
             )
         current_node_id = edge["end"]
     load_state = LoadState(value["loadState"])
@@ -279,12 +279,12 @@ def _run_zone_admission(
     waits = [item for item in segments if item.kind is SegmentKind.WAIT]
     if traversals[-1].end_ms >= end_time_ms:
         raise DomainError(
-            "phase4.zone.terminal_hold_horizon",
+            "recovery.zone.terminal_hold_horizon",
             "zone intent must leave time to hold its terminal safe node",
         )
     planned_rows = _segment_reservations(
         value["vehicleId"],
-        "phase4-zone-intent",
+        "recovery-zone-intent",
         segments,
         topology,
         terminal_hold_node_id=route.end_node_id,
@@ -347,7 +347,7 @@ def _run_deadlock_case(
     unknown_evidence = sorted(set(evidence_edge_ids) - topology.edges.keys())
     if unknown_evidence:
         raise DomainError(
-            "phase4.deadlock.evidence_edge",
+            "recovery.deadlock.evidence_edge",
             f"deadlock case references unknown evidence edges {unknown_evidence!r}",
         )
     evidence_resources, evidence_nodes_by_group = _deadlock_evidence(
@@ -368,13 +368,13 @@ def _run_deadlock_case(
     unknown_resources = sorted(referenced_resources - known_resources)
     if unknown_resources:
         raise DomainError(
-            "phase4.deadlock.resource",
+            "recovery.deadlock.resource",
             f"deadlock case references unknown resources {unknown_resources!r}",
         )
     uncovered_resources = sorted(referenced_resources - evidence_resources)
     if uncovered_resources:
         raise DomainError(
-            "phase4.deadlock.evidence_resource",
+            "recovery.deadlock.evidence_resource",
             "deadlock evidence edges do not cover referenced resources "
             f"{uncovered_resources!r}",
         )
@@ -401,7 +401,7 @@ def _run_deadlock_case(
     vehicles = tuple(_recovery_vehicle_from_dict(item) for item in value["recoveryVehicles"])
     if len({item.vehicle_id for item in vehicles}) != len(vehicles):
         raise DomainError(
-            "phase4.recovery_vehicle.duplicate",
+            "recovery.recovery_vehicle.duplicate",
             "deadlock case contains duplicate recovery vehicle ids",
         )
     for vehicle in vehicles:
@@ -409,14 +409,14 @@ def _run_deadlock_case(
             node = topology.nodes.get(vehicle.current_node_id)
             if node is None or vehicle.robot_group not in node["allowedRobotGroups"]:
                 raise DomainError(
-                    "phase4.recovery_vehicle.node",
+                    "recovery.recovery_vehicle.node",
                     f"invalid recovery node position for {vehicle.vehicle_id!r}",
                 )
             if vehicle.current_node_id not in evidence_nodes_by_group.get(
                 vehicle.robot_group, set()
             ):
                 raise DomainError(
-                    "phase4.recovery_vehicle.evidence_node",
+                    "recovery.recovery_vehicle.evidence_node",
                     "recovery vehicle current node must be an endpoint of an "
                     f"evidence edge for {vehicle.vehicle_id!r}",
                 )
@@ -424,12 +424,12 @@ def _run_deadlock_case(
             edge = topology.edges.get(vehicle.current_edge_id or "")
             if edge is None or edge["robotGroup"] != vehicle.robot_group:
                 raise DomainError(
-                    "phase4.recovery_vehicle.edge",
+                    "recovery.recovery_vehicle.edge",
                     f"invalid recovery edge position for {vehicle.vehicle_id!r}",
                 )
             if vehicle.current_edge_id not in evidence_edge_ids:
                 raise DomainError(
-                    "phase4.recovery_vehicle.evidence_edge",
+                    "recovery.recovery_vehicle.evidence_edge",
                     "recovery vehicle current edge must be one of the evidence "
                     f"edges for {vehicle.vehicle_id!r}",
                 )
@@ -471,7 +471,7 @@ def _deadlock_evidence(
         edge_resource = topology.edge_resources.get(edge_id)
         if edge_resource is None:
             raise DomainError(
-                "phase4.deadlock.evidence_resource",
+                "recovery.deadlock.evidence_resource",
                 f"evidence edge {edge_id!r} has no conflict resource record",
             )
         resources.add(edge_resource["ownResource"])

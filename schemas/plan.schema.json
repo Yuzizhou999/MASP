@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://masp.local/schemas/plan.schema.json",
-  "title": "MASP phase 1 vehicle plan",
-  "description": "阶段 1 使用的显式车辆计划。此阶段只执行并验证计划，不负责自动找路。",
+  "title": "MASP explicit vehicle plan",
+  "description": "Explicit vehicle plan consumed and validated by the deterministic simulator.",
   "type": "object",
   "additionalProperties": false,
   "required": [

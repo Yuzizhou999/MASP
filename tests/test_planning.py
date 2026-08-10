@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 from masp.assignment import TaskAllocator
 from masp.domain import (
     LoadState,
+    PlanSegment,
     SegmentKind,
     TransportTask,
     Vehicle,
@@ -18,7 +20,7 @@ from masp.motion import EdgeTravelTimeModel
 from masp.plans import PlanValidator
 from masp.reservations import Reservation, ReservationTable
 from masp.routing import RouteProvider
-from masp.scenario import build_phase2_plans, build_simulator
+from masp.scenario import build_plans, build_simulator
 from masp.sipp import ContinuousTimeSippPlanner, SippPlanningError
 from masp.topology import MapTopology
 
@@ -28,7 +30,7 @@ from conftest import read_json
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def phase2_documents():
+def planning_documents():
     model = read_json("generated/xiate-unified-map-model.json")
     conflicts = read_json("generated/xiate-conflict-resources.json")
     workstations = read_json("generated/xiate-workstations.json")
@@ -39,7 +41,7 @@ def phase2_documents():
 
 
 def test_motion_time_is_positive_rounded_and_load_sensitive() -> None:
-    model, _, _, profiles, scheduler, _ = phase2_documents()
+    model, _, _, profiles, scheduler, _ = planning_documents()
     quantum = scheduler["planner"]["timeQuantumMs"]
     travel = EdgeTravelTimeModel(model, profiles, quantum)
     edge = next(item for item in model["edges"] if item["id"] == "fork:edge-218")
@@ -72,7 +74,7 @@ def test_motion_time_is_positive_rounded_and_load_sensitive() -> None:
 
 
 def test_candidate_routes_follow_the_vehicle_directed_subgraph() -> None:
-    model, _, _, profiles, scheduler, _ = phase2_documents()
+    model, _, _, profiles, scheduler, _ = planning_documents()
     travel = EdgeTravelTimeModel(model, profiles, scheduler["planner"]["timeQuantumMs"])
     routes = RouteProvider(model, travel)
     edges = {item["id"]: item for item in model["edges"]}
@@ -97,7 +99,7 @@ def test_candidate_routes_follow_the_vehicle_directed_subgraph() -> None:
 
 
 def test_candidate_routes_reuse_static_graph_and_route_cache() -> None:
-    model, _, _, profiles, scheduler, _ = phase2_documents()
+    model, _, _, profiles, scheduler, _ = planning_documents()
     travel = EdgeTravelTimeModel(model, profiles, scheduler["planner"]["timeQuantumMs"])
     routes = RouteProvider(model, travel)
 
@@ -136,7 +138,7 @@ def test_candidate_routes_reuse_static_graph_and_route_cache() -> None:
 
 def test_occupied_wait_node_jumps_to_blocker_end() -> None:
     model, conflicts, workstations, profiles, scheduler, traffic_zones = (
-        phase2_documents()
+        planning_documents()
     )
     topology = MapTopology(model, conflicts, workstations, traffic_zones)
     travel = EdgeTravelTimeModel(
@@ -201,7 +203,7 @@ def test_non_temporal_sipp_failures_are_not_retried_with_later_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model, conflicts, workstations, profiles, scheduler, traffic_zones = (
-        phase2_documents()
+        planning_documents()
     )
     topology = MapTopology(model, conflicts, workstations, traffic_zones)
     travel = EdgeTravelTimeModel(
@@ -262,8 +264,111 @@ def test_non_temporal_sipp_failures_are_not_retried_with_later_starts(
     assert attempts < expected_combinations * planner.max_schedule_attempts
 
 
+def test_progressive_route_search_stops_after_fastest_feasible_combination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model, conflicts, workstations, profiles, scheduler, traffic_zones = (
+        planning_documents()
+    )
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        RouteProvider(model, travel),
+        travel,
+        scheduler,
+        (item["nodeId"] for item in traffic_zones["recoveryNodes"]),
+    )
+    vehicle = Vehicle.from_dict(
+        {
+            "vehicleId": "fork-001",
+            "robotGroup": "fork",
+            "initialNodeId": "fork:PP1171",
+            "initialHeadingRad": 0.0,
+            "initialLoadState": "empty",
+        }
+    )
+    task = TransportTask(
+        task_id="progressive-task",
+        release_time_ms=0,
+        pickup_node_id="fork:AP1123",
+        dropoff_node_id="fork:AP2121",
+        required_robot_group="fork",
+        payload_type="pallet",
+        payload_id=None,
+        pickup_service_ms=5000,
+        dropoff_service_ms=5000,
+    )
+    attempts = 0
+
+    def succeed(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        return (
+            PlanSegment(
+                segment_id="synthetic",
+                kind=SegmentKind.TRAVERSE,
+                start_ms=0,
+                end_ms=100,
+                start_node_id=vehicle.current_node_id,
+                end_node_id=task.dropoff_node_id,
+                edge_id=None,
+                expected_load_state=LoadState.EMPTY,
+            ),
+        )
+
+    monkeypatch.setattr(planner, "_schedule_combination", succeed)
+    planned = planner.plan_task(
+        vehicle, task, 0, 400000, ReservationTable(), 0
+    )
+
+    assert attempts == 1
+    assert planned.diagnostics.route_combinations_tried == 1
+    assert planned.diagnostics.route_expansion_level == 1
+
+
+def test_sipp_rejects_work_after_computation_deadline() -> None:
+    model, conflicts, workstations, profiles, scheduler, traffic_zones = (
+        planning_documents()
+    )
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        RouteProvider(model, travel),
+        travel,
+        scheduler,
+        (item["nodeId"] for item in traffic_zones["recoveryNodes"]),
+    )
+    scenario = read_json("scenarios/continuous-task-planning.json")
+    vehicle = Vehicle.from_dict(scenario["vehicles"][0])
+    defaults = scheduler["serviceDefaults"]
+    task = TransportTask.from_dict(
+        scenario["tasks"][0],
+        int(defaults["pickupServiceMs"]),
+        int(defaults["dropoffServiceMs"]),
+    )
+
+    with pytest.raises(SippPlanningError) as error:
+        planner.plan_task(
+            vehicle,
+            task,
+            0,
+            int(scenario["endTimeMs"]),
+            ReservationTable(),
+            0,
+            deadline_ns=time.perf_counter_ns() - 1,
+        )
+
+    assert error.value.code == "sipp.deadline.exceeded"
+
+
 def test_assignment_filters_robot_group_and_chooses_minimum_cost_vehicle() -> None:
-    model, conflicts, workstations, profiles, scheduler, _ = phase2_documents()
+    model, conflicts, workstations, profiles, scheduler, _ = planning_documents()
     topology = MapTopology(model, conflicts, workstations)
     travel = EdgeTravelTimeModel(model, profiles, scheduler["planner"]["timeQuantumMs"])
     routes = RouteProvider(model, travel)
@@ -333,13 +438,13 @@ def test_assignment_filters_robot_group_and_chooses_minimum_cost_vehicle() -> No
 
 
 def test_continuous_task_scenario_is_deterministic_and_policy_compliant() -> None:
-    scenario = read_json("scenarios/phase2-continuous-tasks.json")
-    documents = phase2_documents()
+    scenario = read_json("scenarios/continuous-task-planning.json")
+    documents = planning_documents()
 
-    first, first_planned = build_phase2_plans(
+    first, first_planned = build_plans(
         deepcopy(scenario), *documents, ROOT / "schemas"
     )
-    second, second_planned = build_phase2_plans(
+    second, second_planned = build_plans(
         deepcopy(scenario), *documents, ROOT / "schemas"
     )
 
@@ -388,13 +493,13 @@ def test_continuous_task_scenario_is_deterministic_and_policy_compliant() -> Non
     assert {vehicle["state"] for vehicle in simulation["vehicles"]} == {"IDLE"}
 
 
-def test_phase2_schema_is_valid_and_example_matches() -> None:
+def test_planning_schema_is_valid_and_example_matches() -> None:
     from jsonschema import Draft202012Validator
 
-    from masp.scenario import validate_phase2_scenario_document
+    from masp.scenario import validate_planning_scenario_document
 
-    schema = read_json("schemas/phase2-scenario.schema.json")
+    schema = read_json("schemas/planning-scenario.schema.json")
     Draft202012Validator.check_schema(schema)
-    validate_phase2_scenario_document(
-        read_json("scenarios/phase2-continuous-tasks.json"), ROOT / "schemas"
+    validate_planning_scenario_document(
+        read_json("scenarios/continuous-task-planning.json"), ROOT / "schemas"
     )

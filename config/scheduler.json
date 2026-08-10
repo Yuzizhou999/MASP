@@ -21,7 +21,11 @@
     "planningHorizonMs": 120000,
     "executionHorizonMs": 5000,
     "planningTimeoutMs": 1000,
+    "planningDeadlineGuardMs": 50,
     "candidateRouteCount": 3,
+    "progressiveRouteSearch": true,
+    "routeExpansionWaitThresholdMs": 5000,
+    "routeBranchAndBound": true,
     "timeQuantumMs": 100,
     "maxSippScheduleAttempts": 200,
     "provisional": true
@@ -35,6 +39,9 @@
   "coordination": {
     "defaultPolicy": "top_k",
     "priorityCandidateCount": 5,
+    "localConflictPlanning": true,
+    "conflictRouteLookaheadCount": 1,
+    "rlPriorityPrefixCount": 2,
     "priorityStrategies": [
       "task_age",
       "shortest_remaining",

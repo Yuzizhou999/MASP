@@ -40,12 +40,12 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a deterministic MASP phase 1 scenario")
+    parser = argparse.ArgumentParser(description="Run a deterministic explicit-plan simulation")
     parser.add_argument(
         "scenario",
         nargs="?",
         type=Path,
-        default=ROOT / "scenarios/phase1-single-vehicle.json",
+        default=ROOT / "scenarios/explicit-single-vehicle.json",
     )
     parser.add_argument(
         "--map",
