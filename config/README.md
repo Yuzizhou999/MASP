@@ -62,9 +62,13 @@ RL 优先级策略需要单独安装训练依赖：
 
 ```powershell
 python -m pip install -r requirements-rl.txt
-python tools/train_priority_policy.py scenarios/interactive-multi-fleet.json `
-  --state-source rolling --behavior-clone-epochs 4 `
-  --steps 256 --candidate-count 1 --priority-prefix-count 2 `
+python tools/train_priority_policy.py `
+  scenarios/interactive-multi-fleet.json `
+  scenarios/realistic-multi-fleet.json `
+  --state-source rolling --validation-fraction 0.2 `
+  --behavior-clone-epochs 100 --steps 0 `
+  --max-candidates 8 --hidden-dim 32 --transformer-layers 1 `
+  --candidate-count 3 --priority-prefix-count 2 `
   --output-dir runs/priority-policy-training
 ```
 
@@ -80,11 +84,18 @@ python tools/simulate_dispatch.py scenarios/interactive-multi-fleet.json `
   --output-dir runs/priority-policy-training/interactive-benchmark
 ```
 
+训练脚本会枚举局部 Top-M 前缀，并用未修改的 SIPP、预留表和计划验证器产生
+oracle 标签；没有完整可行排列时，标签选择能安全规划最多任务的部分前缀。
+训练/验证状态按稳定哈希拆分，`training-summary.json` 报告 oracle 前缀命中率、
+可行率和相对 congestion 奖励。`--steps 0` 表示只做 oracle 监督训练；非零值
+用于可选的单步 PPO 微调，不再作为默认路径。
+
 训练和推理只在共享未来资源的局部冲突分量中运行。`--priority-prefix-count`
 控制 RL 决定分量前部多少辆车，未被选择的尾部保留 congestion 顺序；
 `--rl-candidates` 控制每个决策周期实际送入 SIPP 评估的 RL 候选数量。
-checkpoint 缺失、推理异常、超时或输出非法时会使用拥堵启发式；合法 RL
-排列若全部不可行，也会额外评估一次拥堵启发式候选。RL 只返回车辆优先级，
+checkpoint 会校验观察版本、动作模式、奖励版本、规划窗口和 Top-M 长度；旧版或
+不兼容模型不会静默接入。实验模式保留 Top-K 中的确定性候选，并用 RL 替换未被
+证明有效的随机候选；模型异常时回退整套确定性候选。RL 只返回车辆优先级，
 不能直接写资源预留、提交计划或绕过 `PlanValidator`。CPU 推理默认使用单线程
 降低小 batch Transformer 的线程调度开销，可用 `MASP_RL_TORCH_THREADS` 覆盖。
 未指定 `--rl-allow-deviation` 时，RL checkpoint 不会替换 congestion guardian，

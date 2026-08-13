@@ -121,6 +121,7 @@ def run_benchmark(
     raw_runs: list[dict[str, Any]] = []
     benchmark_policies: list[tuple[str, list[int]]] = [
         ("congestion", [int(scenario["seed"])]),
+        ("top_k", seeds),
         ("random", seeds),
     ]
     if rl_checkpoint is not None:
@@ -150,6 +151,11 @@ def run_benchmark(
                     "seed": seed,
                     "completedTaskCount": metrics["completedTaskCount"],
                     "completedDropoffsPerHour": metrics["completedDropoffsPerHour"],
+                    "completedDropoffsPerActiveHour": metrics[
+                        "completedDropoffsPerActiveHour"
+                    ],
+                    "meanTaskCycleTimeMs": metrics["meanTaskCycleTimeMs"],
+                    "meanTaskQueueTimeMs": metrics["meanTaskQueueTimeMs"],
                     "insertedWaitMs": planning_summary["insertedWaitMs"],
                     "planningP95Ms": planning_summary["planningLatencyMs"]["p95"],
                     "planningPeriodMissCount": planning_summary[
@@ -187,6 +193,20 @@ def run_benchmark(
             "meanCompletedDropoffsPerHour": round(
                 statistics.fmean(item["completedDropoffsPerHour"] for item in rows),
                 6,
+            ),
+            "meanCompletedDropoffsPerActiveHour": round(
+                statistics.fmean(
+                    item["completedDropoffsPerActiveHour"] for item in rows
+                ),
+                6,
+            ),
+            "meanTaskCycleTimeMs": round(
+                statistics.fmean(item["meanTaskCycleTimeMs"] for item in rows),
+                3,
+            ),
+            "meanTaskQueueTimeMs": round(
+                statistics.fmean(item["meanTaskQueueTimeMs"] for item in rows),
+                3,
             ),
             "meanInsertedWaitMs": round(
                 statistics.fmean(item["insertedWaitMs"] for item in rows), 3
@@ -241,18 +261,30 @@ def run_benchmark(
         ),
     }
     if "rl" in aggregates:
-        checks["rlThroughputAboveBestBaseline"] = (
-            aggregates["rl"]["meanCompletedDropoffsPerHour"]
+        baseline_names = ("congestion", "top_k", "random")
+        checks["rlActiveThroughputAboveBestBaseline"] = (
+            aggregates["rl"]["meanCompletedDropoffsPerActiveHour"]
             > max(
-                aggregates["congestion"]["meanCompletedDropoffsPerHour"],
-                aggregates["random"]["meanCompletedDropoffsPerHour"],
+                aggregates[name]["meanCompletedDropoffsPerActiveHour"]
+                for name in baseline_names
+            )
+        )
+        checks["rlCycleTimeBelowBestBaseline"] = (
+            aggregates["rl"]["meanTaskCycleTimeMs"]
+            < min(
+                aggregates[name]["meanTaskCycleTimeMs"]
+                for name in baseline_names
             )
         )
         checks["rlInferenceHadNoFallback"] = aggregates["rl"]["rlFallbackCount"] == 0
     acceptance_checks = {
         key: value
         for key, value in checks.items()
-        if key not in {"rlThroughputAboveBestBaseline"}
+        if key
+        not in {
+            "rlActiveThroughputAboveBestBaseline",
+            "rlCycleTimeBelowBestBaseline",
+        }
     }
     return {
         "schemaVersion": 1,
@@ -262,7 +294,8 @@ def run_benchmark(
         "checks": checks,
         "accepted": all(acceptance_checks.values()),
         "rlExitConditionMet": bool(
-            checks.get("rlThroughputAboveBestBaseline", False)
+            checks.get("rlActiveThroughputAboveBestBaseline", False)
+            and checks.get("rlCycleTimeBelowBestBaseline", False)
             and checks.get("rlInferenceHadNoFallback", True)
         ),
     }
@@ -284,7 +317,7 @@ def main() -> None:
     parser.add_argument(
         "--rl-checkpoint",
         type=Path,
-        help="PPO priority checkpoint; invalid or missing checkpoints use congestion fallback",
+        help="versioned priority checkpoint; invalid or missing checkpoints use deterministic fallback",
     )
     parser.add_argument(
         "--rl-candidates",

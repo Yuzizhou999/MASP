@@ -186,9 +186,11 @@ class DispatchPlanningResult:
 
     def summary(self, include_timing: bool = True) -> dict[str, Any]:
         durations = [item.planning_duration_ms for item in self.cycles]
+        planned_task_ids = {plan.task_id for plan in self.plans}
         result: dict[str, Any] = {
             "policy": self.policy,
-            "plannedTaskCount": len(self.plans),
+            "plannedTaskCount": len(planned_task_ids),
+            "planFragmentCount": len(self.plans),
             "unplannedTaskCount": len(self.unplanned_task_ids),
             "unplannedTaskIds": list(self.unplanned_task_ids),
             "planningPeriodMs": self.planning_period_ms,
@@ -447,6 +449,27 @@ class RollingHorizonPlanner(TaskPlanner):
                 pending,
                 now_ms,
                 frozenset(excluded_pairs_this_cycle),
+            )
+            continuations: list[AssignmentProposal] = []
+            for vehicle in sorted(available, key=lambda item: item.vehicle_id):
+                task_id = vehicle.active_task_id
+                if task_id is None or task_id in planned_task_ids:
+                    continue
+                if (vehicle.vehicle_id, task_id) in excluded_pairs_this_cycle:
+                    continue
+                task = tasks_by_id.get(task_id)
+                if task is None:
+                    continue
+                cost = self.allocator.continuation_cost(vehicle, task, now_ms)
+                if cost is not None:
+                    continuations.append(
+                        AssignmentProposal(vehicle.vehicle_id, task.task_id, cost)
+                    )
+            proposals = tuple(
+                sorted(
+                    (*proposals, *continuations),
+                    key=lambda item: (item.vehicle_id, item.task_id),
+                )
             )
             if not proposals:
                 break
@@ -748,44 +771,6 @@ class RollingHorizonPlanner(TaskPlanner):
                     round_index += 1
                     continue
 
-                if self.policy == PriorityStrategy.RL.value:
-                    guardians = [
-                        item
-                        for item in feasible
-                        if item.record.strategy == "congestion_guardian"
-                    ]
-                    if guardians:
-                        guardian = min(
-                            guardians,
-                            key=lambda item: item.record.score.ordering_key()
-                            if item.record.score is not None
-                            else (math.inf,),
-                        )
-                        guardian_score = guardian.record.score
-                        if guardian_score is not None:
-                            guardian_throughput = (
-                                guardian_score.projected_dropoffs,
-                                guardian_score.projected_pickups,
-                            )
-                            guarded = [
-                                item
-                                for item in feasible
-                                if item is guardian
-                                or (
-                                    item.record.score is not None
-                                    and (
-                                        item.record.score.projected_dropoffs,
-                                        item.record.score.projected_pickups,
-                                    )
-                                    > guardian_throughput
-                                )
-                            ]
-                            if not self.rl_allow_deviation:
-                                guarded = [guardian]
-                            if len(guarded) < len(feasible):
-                                self.rl_guardian_override_count += 1
-                                feasible = guarded
-
                 selected = min(
                     feasible,
                     key=lambda item: (
@@ -902,11 +887,26 @@ class RollingHorizonPlanner(TaskPlanner):
                     f"vehicle {vehicle.vehicle_id!r} must start at a waitable node"
                 )
         for task in tasks:
-            if task.state is not TaskState.QUEUED or task.assigned_vehicle_id is not None:
+            is_queued = (
+                task.state is TaskState.QUEUED
+                and task.assigned_vehicle_id is None
+            )
+            is_continuation = task.state in {
+                TaskState.EN_ROUTE_PICKUP,
+                TaskState.EN_ROUTE_DROPOFF,
+            } and task.assigned_vehicle_id in projections
+            if not (is_queued or is_continuation):
                 raise DomainError(
                     "coordination.task.initial_state",
-                    f"task {task.task_id!r} must start QUEUED and unassigned"
+                    f"task {task.task_id!r} is not queued or safely continuable"
                 )
+            if is_continuation:
+                vehicle = projections[task.assigned_vehicle_id or ""]
+                if vehicle.active_task_id != task.task_id:
+                    raise DomainError(
+                        "coordination.task.continuation_mismatch",
+                        f"task {task.task_id!r} is not active on its assigned vehicle",
+                    )
             self.topology.validate_task(task)
         return projections, tasks_by_id
 
@@ -931,25 +931,39 @@ class RollingHorizonPlanner(TaskPlanner):
         if cached is not None:
             return cached
 
-        routes = (
-            self.routes.candidate_routes(
-                vehicle.robot_group,
-                current_node_id,
-                task.pickup_node_id,
-                LoadState.EMPTY,
-                limit=self.conflict_route_lookahead_count,
-            ),
-            self.routes.candidate_routes(
-                task.required_robot_group,
-                task.pickup_node_id,
-                task.dropoff_node_id,
-                LoadState.LOADED,
-                limit=self.conflict_route_lookahead_count,
-            ),
-            self.sipp._recovery_routes(
-                task.required_robot_group, task.dropoff_node_id
-            )[: self.conflict_route_lookahead_count],
-        )
+        if task.state is TaskState.EN_ROUTE_DROPOFF:
+            routes = (
+                self.routes.candidate_routes(
+                    task.required_robot_group,
+                    current_node_id,
+                    task.dropoff_node_id,
+                    LoadState.LOADED,
+                    limit=self.conflict_route_lookahead_count,
+                ),
+                self.sipp._recovery_routes(
+                    task.required_robot_group, task.dropoff_node_id
+                )[: self.conflict_route_lookahead_count],
+            )
+        else:
+            routes = (
+                self.routes.candidate_routes(
+                    vehicle.robot_group,
+                    current_node_id,
+                    task.pickup_node_id,
+                    LoadState.EMPTY,
+                    limit=self.conflict_route_lookahead_count,
+                ),
+                self.routes.candidate_routes(
+                    task.required_robot_group,
+                    task.pickup_node_id,
+                    task.dropoff_node_id,
+                    LoadState.LOADED,
+                    limit=self.conflict_route_lookahead_count,
+                ),
+                self.sipp._recovery_routes(
+                    task.required_robot_group, task.dropoff_node_id
+                )[: self.conflict_route_lookahead_count],
+            )
         resources: set[str] = set()
         for route_group in routes:
             for route in route_group:
@@ -1027,9 +1041,33 @@ class RollingHorizonPlanner(TaskPlanner):
         round_index: int,
         variant: int,
     ) -> tuple[AssignmentProposal, ...]:
-        return tuple(
+        def continuation_rank(proposal: AssignmentProposal) -> tuple[bool, int]:
+            task = tasks_by_id[proposal.task_id]
+            active = task.state in {
+                TaskState.EN_ROUTE_PICKUP,
+                TaskState.EN_ROUTE_DROPOFF,
+            }
+            if not active:
+                # Preserve the selected strategy's relative order for queued work.
+                return True, 0
+            return False, (
+                task.assigned_at_ms
+                if task.assigned_at_ms is not None
+                else task.release_time_ms
+            )
+
+        prioritized_components = tuple(
+            sorted(
+                enumerate(components),
+                key=lambda item: (
+                    min(continuation_rank(proposal) for proposal in item[1]),
+                    item[0],
+                ),
+            )
+        )
+        ordered = tuple(
             proposal
-            for component_index, component in enumerate(components)
+            for component_index, (_, component) in enumerate(prioritized_components)
             for proposal in self._order_for_strategy(
                 strategy,
                 component,
@@ -1040,6 +1078,16 @@ class RollingHorizonPlanner(TaskPlanner):
                 cycle_index,
                 round_index,
                 variant * 1009 + component_index,
+            )
+        )
+        # An active task already owns the vehicle and its payload.  It must
+        # retain first claim on shared resources when its commitment expires;
+        # otherwise a newly released task can reserve the continuation path
+        # and leave the active vehicle rolling through WAIT fragments.
+        return tuple(
+            sorted(
+                ordered,
+                key=continuation_rank,
             )
         )
 
@@ -1088,18 +1136,56 @@ class RollingHorizonPlanner(TaskPlanner):
                         heuristic_order(PriorityStrategy.CONGESTION),
                     ),
                 )
-            limit = min(
-                self.priority_candidate_count,
-                max(1, int(getattr(self.rl_policy, "candidate_count", 1))),
-            )
-            if not any(len(component) > 1 for component in components):
-                return (
-                    (
-                        "congestion_fallback",
-                        heuristic_order(PriorityStrategy.CONGESTION),
-                    ),
+            limit = self.priority_candidate_count
+
+            def append_unique(
+                strategy_name: str, order: tuple[AssignmentProposal, ...]
+            ) -> bool:
+                signature = tuple(
+                    (item.vehicle_id, item.task_id) for item in order
                 )
-            if self.rl_policy is not None:
+                if signature in seen:
+                    if strategy_name == "congestion_guardian":
+                        for index, (_, existing) in enumerate(generated):
+                            existing_signature = tuple(
+                                (item.vehicle_id, item.task_id)
+                                for item in existing
+                            )
+                            if existing_signature == signature:
+                                generated[index] = (strategy_name, existing)
+                                return True
+                    return False
+                seen.add(signature)
+                generated.append((strategy_name, tuple(order)))
+                return True
+
+            # Keep the useful deterministic Top-K candidates and reserve one
+            # slot for learned exploration. Random remains a final filler only.
+            heuristic_target = max(1, limit - 1)
+            for variant, strategy in enumerate(self.priority_strategies):
+                if strategy is PriorityStrategy.RANDOM:
+                    continue
+                strategy_name = (
+                    "congestion_guardian"
+                    if strategy is PriorityStrategy.CONGESTION
+                    else strategy.value
+                )
+                if append_unique(strategy_name, heuristic_order(strategy, variant)):
+                    if strategy is PriorityStrategy.CONGESTION:
+                        self.rl_guardian_candidate_count += 1
+                if len(generated) >= heuristic_target:
+                    break
+
+            can_infer = (
+                self.rl_policy is not None
+                and len(generated) < limit
+                and any(len(component) > 1 for component in components)
+            )
+            if can_infer:
+                rl_limit = min(
+                    limit - len(generated),
+                    max(1, int(getattr(self.rl_policy, "candidate_count", 1))),
+                )
                 started = time.perf_counter_ns()
                 self.rl_inference_count += 1
                 inference_recorded = False
@@ -1129,7 +1215,7 @@ class RollingHorizonPlanner(TaskPlanner):
                             reservations=reservations,
                             now_ms=now_ms,
                             priority_age_ms=self.priority_age_ms,
-                            count=limit,
+                            count=rl_limit,
                             prefix_count=min(
                                 self.rl_priority_prefix_count, len(component)
                             ),
@@ -1157,7 +1243,7 @@ class RollingHorizonPlanner(TaskPlanner):
                         raise TimeoutError(
                             f"RL priority inference exceeded {self.rl_inference_timeout_ms} ms"
                         )
-                    for variant in range(limit):
+                    for variant in range(rl_limit):
                         order = tuple(
                             proposal
                             for local_orders in component_orders
@@ -1165,39 +1251,27 @@ class RollingHorizonPlanner(TaskPlanner):
                                 min(variant, len(local_orders) - 1)
                             ]
                         )
-                        signature = tuple(
-                            (item.vehicle_id, item.task_id) for item in order
-                        )
-                        if signature in seen:
-                            continue
-                        seen.add(signature)
-                        generated.append((PriorityStrategy.RL.value, tuple(order)))
+                        append_unique(PriorityStrategy.RL.value, tuple(order))
                         if len(generated) >= limit:
                             break
-                    if generated:
-                        guardian = heuristic_order(PriorityStrategy.CONGESTION)
-                        guardian_signature = tuple(
-                            (item.vehicle_id, item.task_id) for item in guardian
-                        )
-                        if guardian_signature not in seen:
-                            generated.append(("congestion_guardian", guardian))
-                            self.rl_guardian_candidate_count += 1
-                        return tuple(generated)
-                    raise ValueError("RL priority policy returned no candidates")
                 except Exception:
                     elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
                     if not inference_recorded:
                         self.rl_inference_ms += elapsed_ms
                     self.rl_fallback_count += 1
             else:
-                self.rl_fallback_count += 1
-            # The fallback is deliberately routed through the existing heuristic.
-            return (
-                (
-                    "congestion_fallback",
-                    heuristic_order(PriorityStrategy.CONGESTION),
-                ),
-            )
+                if self.rl_policy is None:
+                    self.rl_fallback_count += 1
+
+            attempts = 0
+            while len(generated) < limit and attempts < max(20, limit * 20):
+                order = heuristic_order(
+                    PriorityStrategy.RANDOM,
+                    len(self.priority_strategies) + attempts,
+                )
+                attempts += 1
+                append_unique(PriorityStrategy.RANDOM.value, order)
+            return tuple(generated)
         else:
             strategies = (PriorityStrategy(self.policy),)
             limit = 1
@@ -1428,7 +1502,16 @@ class RollingHorizonPlanner(TaskPlanner):
             vehicle = projections[proposal.vehicle_id]
             task = tasks_by_id[proposal.task_id]
             try:
-                planned = self.sipp.plan_task(
+                continuing = task.state in {
+                    TaskState.EN_ROUTE_PICKUP,
+                    TaskState.EN_ROUTE_DROPOFF,
+                }
+                plan_method = (
+                    self.sipp.plan_remaining_task
+                    if continuing
+                    else self.sipp.plan_task
+                )
+                planned = plan_method(
                     vehicle,
                     task,
                     now_ms,
@@ -1437,7 +1520,12 @@ class RollingHorizonPlanner(TaskPlanner):
                     local_counts[vehicle.vehicle_id],
                     deadline_ns=deadline_ns,
                 )
-                validated = self.validator.validate(planned.plan, vehicle, task)
+                validated = self.validator.validate(
+                    planned.plan,
+                    vehicle,
+                    task,
+                    allow_continuation=continuing,
+                )
                 replacement = self._replace_tail(
                     list(reservations.for_vehicle(vehicle.vehicle_id)),
                     vehicle,
@@ -1542,6 +1630,15 @@ class RollingHorizonPlanner(TaskPlanner):
         for segment in plan.segments:
             if segment.end_ms < nominal or segment.end_node_id is None:
                 continue
+            if (
+                segment.kind is SegmentKind.WAIT
+                and segment.start_ms < nominal < segment.end_ms
+                and self.topology.wait_allowed(
+                    segment.end_node_id, projected_vehicle.robot_group
+                )
+            ):
+                safe_until = nominal
+                break
             if self.topology.wait_allowed(
                 segment.end_node_id, projected_vehicle.robot_group
             ):

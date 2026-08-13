@@ -4,6 +4,7 @@ import math
 import os
 import time
 from dataclasses import dataclass
+from itertools import permutations
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -15,11 +16,14 @@ from torch import nn
 from torch.distributions import Categorical
 
 from .assignment import AssignmentProposal
-from .domain import LoadState, TransportTask, Vehicle
+from .domain import LoadState, TaskState, TransportTask, Vehicle
 from .reservations import ReservationTable
 
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
+OBSERVATION_VERSION = 1
+ACTION_MODE = "local_priority_prefix"
+REWARD_VERSION = 2
 BASE_FEATURE_DIM = 20
 PATH_FEATURE_DIM = 10
 
@@ -196,6 +200,17 @@ class PriorityObservationEncoder:
     ) -> tuple[tuple[float, LoadState, tuple[str, ...]], ...]:
         if vehicle.current_node_id is None:
             return ()
+        if task.state is TaskState.EN_ROUTE_DROPOFF:
+            loaded = self.routes.candidate_routes(
+                task.required_robot_group,
+                vehicle.current_node_id,
+                task.dropoff_node_id,
+                LoadState.LOADED,
+                limit=1,
+            )
+            return (
+                (1.0, LoadState.LOADED, loaded[0].edge_ids if loaded else ()),
+            )
         empty = self.routes.candidate_routes(
             vehicle.robot_group,
             vehicle.current_node_id,
@@ -540,6 +555,104 @@ class PriorityTrainingCase:
     evaluator: RewardEvaluator
     case_id: str = "case"
     reference_action: tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True)
+class PriorityOracleLabel:
+    action: tuple[int, ...]
+    reward: float
+    info: dict[str, Any]
+    baseline_reward: float
+    baseline_info: dict[str, Any]
+    evaluated_action_count: int
+    feasible_action_count: int
+
+    @property
+    def feasible(self) -> bool:
+        return bool(self.info.get("feasible", False))
+
+
+def _oracle_ordering_key(
+    reward: float,
+    info: dict[str, Any],
+    order: tuple[int, ...],
+) -> tuple[Any, ...]:
+    score = info.get("score") or {}
+    if bool(info.get("feasible", False)):
+        return (
+            0,
+            -int(score.get("projectedDropoffs", 0)),
+            -int(score.get("projectedPickups", 0)),
+            int(score.get("latenessMs", 0)),
+            int(score.get("queueTimeMs", 0)),
+            int(score.get("waitMs", 0)),
+            int(score.get("emptyTravelMs", 0)),
+            int(score.get("completionTimeSumMs", 0)),
+            int(info.get("scheduleAttempts", 0)),
+            int(info.get("routeCombinationsTried", 0)),
+            order,
+        )
+    return (
+        1,
+        -int(info.get("plannedTaskCount", 0)),
+        -float(reward),
+        int(info.get("scheduleAttempts", 0)),
+        int(info.get("routeCombinationsTried", 0)),
+        order,
+    )
+
+
+def label_oracle_prefix(
+    case: PriorityTrainingCase,
+    *,
+    prefix_count: int,
+    max_evaluations: int = 720,
+) -> PriorityOracleLabel:
+    """Enumerate a small local prefix and label it with the real safe evaluator."""
+
+    count = case.observation.candidate_count
+    active_prefix = min(count, max(1, int(prefix_count)))
+    evaluation_count = math.perm(count, active_prefix)
+    if evaluation_count > max_evaluations:
+        raise ValueError(
+            f"oracle prefix needs {evaluation_count} evaluations; "
+            f"limit is {max_evaluations}"
+        )
+
+    evaluated: list[tuple[tuple[int, ...], float, dict[str, Any]]] = []
+    baseline_order = tuple(range(count))
+    baseline_result: tuple[float, dict[str, Any]] | None = None
+    for prefix in permutations(range(count), active_prefix):
+        prefix_set = set(prefix)
+        order = tuple(prefix) + tuple(
+            index for index in range(count) if index not in prefix_set
+        )
+        result = case.evaluator(order)
+        if isinstance(result, tuple):
+            reward, info = float(result[0]), dict(result[1])
+        else:
+            reward, info = float(result), {}
+        evaluated.append((order, reward, info))
+        if order == baseline_order:
+            baseline_result = (reward, info)
+
+    if baseline_result is None:
+        raise RuntimeError("oracle enumeration did not evaluate the baseline order")
+    feasible = [item for item in evaluated if bool(item[2].get("feasible", False))]
+    candidates = feasible or evaluated
+    action, reward, info = min(
+        candidates,
+        key=lambda item: _oracle_ordering_key(item[1], item[2], item[0]),
+    )
+    return PriorityOracleLabel(
+        action=action,
+        reward=reward,
+        info=info,
+        baseline_reward=baseline_result[0],
+        baseline_info=baseline_result[1],
+        evaluated_action_count=len(evaluated),
+        feasible_action_count=len(feasible),
+    )
 
 
 class PriorityOrderEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
@@ -887,6 +1000,20 @@ class PPOPriorityTrainer:
     ) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_metadata = dict(metadata or {})
+        compatibility = {
+            "observation_version": OBSERVATION_VERSION,
+            "action_mode": ACTION_MODE,
+            "reward_version": REWARD_VERSION,
+        }
+        for key, expected in compatibility.items():
+            configured = checkpoint_metadata.get(key, expected)
+            if configured != expected:
+                raise ValueError(
+                    f"checkpoint metadata {key}={configured!r} is incompatible "
+                    f"with {expected!r}"
+                )
+            checkpoint_metadata[key] = expected
         torch.save(
             {
                 "checkpoint_version": CHECKPOINT_VERSION,
@@ -894,7 +1021,7 @@ class PPOPriorityTrainer:
                 "encoder_config": dict(encoder_config),
                 "state_dict": self.network.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict(),
-                "metadata": dict(metadata or {}),
+                "metadata": checkpoint_metadata,
             },
             path,
         )
@@ -908,6 +1035,18 @@ def load_checkpoint(path: str | Path, *, device: str | torch.device = "cpu") -> 
         payload = torch.load(Path(path), map_location=device)
     if int(payload.get("checkpoint_version", -1)) != CHECKPOINT_VERSION:
         raise ValueError("unsupported RL priority checkpoint version")
+    metadata = dict(payload.get("metadata", {}))
+    expected = {
+        "observation_version": OBSERVATION_VERSION,
+        "action_mode": ACTION_MODE,
+        "reward_version": REWARD_VERSION,
+    }
+    for key, value in expected.items():
+        if metadata.get(key) != value:
+            raise ValueError(
+                f"RL priority checkpoint {key} is incompatible: "
+                f"expected {value!r}, got {metadata.get(key)!r}"
+            )
     return payload
 
 
@@ -959,6 +1098,13 @@ class RLPriorityPolicy:
         network = PriorityOrderNetwork(**payload["network_config"])
         network.load_state_dict(payload["state_dict"])
         encoder_config = dict(payload["encoder_config"])
+        trained_horizon_ms = int(
+            encoder_config.get("planning_horizon_ms", planning_horizon_ms)
+        )
+        if trained_horizon_ms != int(planning_horizon_ms):
+            raise ValueError(
+                "RL priority checkpoint planning horizon does not match runtime"
+            )
         encoder = PriorityObservationEncoder(
             topology,
             routes,
@@ -968,6 +1114,15 @@ class RLPriorityPolicy:
         )
         checkpoint_candidates = int(payload.get("metadata", {}).get("candidate_count", 1))
         checkpoint_prefix = payload.get("metadata", {}).get("priority_prefix_count")
+        if checkpoint_prefix is None:
+            raise ValueError("RL priority checkpoint is missing priority_prefix_count")
+        requested_prefix = (
+            int(checkpoint_prefix) if prefix_count is None else int(prefix_count)
+        )
+        if requested_prefix != int(checkpoint_prefix):
+            raise ValueError(
+                "RL priority checkpoint prefix length does not match runtime"
+            )
         return cls(
             network,
             encoder,
@@ -975,9 +1130,7 @@ class RLPriorityPolicy:
             candidate_count=(
                 checkpoint_candidates if candidate_count is None else candidate_count
             ),
-            prefix_count=(
-                checkpoint_prefix if prefix_count is None else prefix_count
-            ),
+            prefix_count=requested_prefix,
             seed=seed,
         )
 
@@ -1079,6 +1232,7 @@ def reward_from_candidate(outcome: Any) -> tuple[float, dict[str, Any]]:
         missing = max(0, len(record.order) - int(record.planned_task_count))
         return -20.0 - 5.0 * missing - computation_penalty, {
             "feasible": False,
+            "plannedTaskCount": record.planned_task_count,
             "failureCode": record.failure_code,
             "scheduleAttempts": schedule_attempts,
             "routeCombinationsTried": route_combinations,

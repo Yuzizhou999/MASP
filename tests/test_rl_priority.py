@@ -14,12 +14,15 @@ from masp.domain import TransportTask, Vehicle
 from masp.coordination import RollingHorizonPlanner
 from masp.reservations import ReservationTable
 from masp.rl_priority import (
+    ACTION_MODE,
     EncodedPriorityObservation,
     PPOPriorityTrainer,
     PriorityObservationEncoder,
     PriorityOrderEnv,
     PriorityOrderNetwork,
     PriorityTrainingCase,
+    RLPriorityPolicy,
+    label_oracle_prefix,
     load_checkpoint,
 )
 from masp.scenario import build_dispatch_plans, build_simulator
@@ -169,6 +172,78 @@ def test_local_priority_prefix_preserves_deterministic_baseline_tail() -> None:
     assert info["priorityPrefixCount"] == 2
 
 
+def test_oracle_prefix_uses_safe_evaluator_and_preserves_tail() -> None:
+    evaluated: list[tuple[int, ...]] = []
+    observation = EncodedPriorityObservation(
+        agent_features=np.zeros((4, 20), dtype=np.float32),
+        path_tokens=np.zeros((4, 3, 10), dtype=np.float32),
+        path_mask=np.ones((4, 3), dtype=np.int8),
+        mask=np.ones((4,), dtype=np.int8),
+        vehicle_ids=("v0", "v1", "v2", "v3"),
+        task_ids=("t0", "t1", "t2", "t3"),
+    )
+
+    def evaluator(order: tuple[int, ...]):
+        evaluated.append(order)
+        feasible = order[:2] == (2, 0)
+        return (
+            10.0 if feasible else -20.0,
+            {
+                "feasible": feasible,
+                "score": {
+                    "projectedDropoffs": 1,
+                    "projectedPickups": 1,
+                    "latenessMs": 0,
+                    "queueTimeMs": 0,
+                    "waitMs": 0,
+                    "emptyTravelMs": 0,
+                    "completionTimeSumMs": 1,
+                }
+                if feasible
+                else None,
+            },
+        )
+
+    label = label_oracle_prefix(
+        PriorityTrainingCase(observation=observation, evaluator=evaluator),
+        prefix_count=2,
+    )
+
+    assert len(evaluated) == 12
+    assert label.action == (2, 0, 1, 3)
+    assert label.feasible
+    assert label.feasible_action_count == 1
+
+
+def test_oracle_prefix_keeps_partial_progress_when_all_orders_fail() -> None:
+    observation = EncodedPriorityObservation(
+        agent_features=np.zeros((3, 20), dtype=np.float32),
+        path_tokens=np.zeros((3, 2, 10), dtype=np.float32),
+        path_mask=np.ones((3, 2), dtype=np.int8),
+        mask=np.ones((3,), dtype=np.int8),
+        vehicle_ids=("v0", "v1", "v2"),
+        task_ids=("t0", "t1", "t2"),
+    )
+
+    def evaluator(order: tuple[int, ...]):
+        planned = 2 if order[0] == 2 else 1
+        return -30.0 + planned, {
+            "feasible": False,
+            "plannedTaskCount": planned,
+            "scheduleAttempts": 1,
+            "routeCombinationsTried": 1,
+        }
+
+    label = label_oracle_prefix(
+        PriorityTrainingCase(observation=observation, evaluator=evaluator),
+        prefix_count=2,
+    )
+
+    assert not label.feasible
+    assert label.action[0] == 2
+    assert label.feasible_action_count == 0
+
+
 def test_checkpoint_round_trip_preserves_deterministic_action(tmp_path: Path) -> None:
     mask = np.asarray([1, 1, 1, 0], dtype=np.int8)
     observation = {
@@ -200,6 +275,7 @@ def test_checkpoint_round_trip_preserves_deterministic_action(tmp_path: Path) ->
         encoder_config={"max_candidates": 4, "path_token_count": 3},
     )
     payload = load_checkpoint(checkpoint)
+    assert payload["metadata"]["action_mode"] == ACTION_MODE
     restored = PriorityOrderNetwork(**payload["network_config"])
     restored.load_state_dict(payload["state_dict"])
     tensor_observation = {
@@ -218,6 +294,41 @@ def test_checkpoint_round_trip_preserves_deterministic_action(tmp_path: Path) ->
         after = restored.act(tensor_observation, deterministic=True)[0]
 
     assert torch.equal(before, after)
+
+
+def test_checkpoint_rejects_runtime_prefix_mismatch(
+    tmp_path: Path, rl_context
+) -> None:
+    planner = rl_context["planner"]
+    network = PriorityOrderNetwork(
+        max_candidates=8,
+        path_token_count=12,
+        hidden_dim=32,
+        attention_heads=4,
+        transformer_layers=1,
+    )
+    trainer = PPOPriorityTrainer.__new__(PPOPriorityTrainer)
+    trainer.network = network
+    trainer.optimizer = torch.optim.Adam(network.parameters(), lr=3e-4)
+    checkpoint = PPOPriorityTrainer.save_checkpoint(
+        trainer,
+        tmp_path / "policy.pt",
+        encoder_config={
+            "planning_horizon_ms": planner.planning_horizon_ms,
+            "max_candidates": 8,
+            "path_token_count": 12,
+        },
+        metadata={"priority_prefix_count": 2, "candidate_count": 1},
+    )
+
+    with pytest.raises(ValueError, match="prefix length"):
+        RLPriorityPolicy.from_checkpoint(
+            checkpoint,
+            topology=planner.topology,
+            routes=planner.routes,
+            planning_horizon_ms=planner.planning_horizon_ms,
+            prefix_count=3,
+        )
 
 
 def test_behavior_clone_handles_variable_candidate_counts() -> None:
@@ -288,8 +399,13 @@ def test_rl_policy_failure_falls_back_to_safe_congestion_planning(rl_context) ->
     assert planning.unplanned_task_ids == ()
     assert planning.rl_inference_count > 0
     assert planning.rl_fallback_count == planning.rl_inference_count
-    assert all(
-        candidate.strategy == "congestion_fallback"
+    assert not any(
+        candidate.strategy == "rl"
+        for cycle in planning.cycles
+        for candidate in cycle.candidates
+    )
+    assert any(
+        candidate.strategy == "congestion_guardian"
         for cycle in planning.cycles
         for candidate in cycle.candidates
     )
@@ -327,6 +443,7 @@ def test_rl_orders_include_deterministic_guardian_candidate(rl_context) -> None:
         0,
     )
 
-    assert orders[0][0] == "rl"
-    assert any(strategy == "congestion_guardian" for strategy, _ in orders)
+    strategies = [strategy for strategy, _ in orders]
+    assert "rl" in strategies
+    assert "congestion_guardian" in strategies
     assert planner.rl_guardian_candidate_count == 1

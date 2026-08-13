@@ -145,6 +145,7 @@ def main() -> None:
             key: planning_summary[key]
             for key in (
                 "plannedTaskCount",
+                "planFragmentCount",
                 "unplannedTaskCount",
                 "planningCycleCount",
                 "decisionCycleCount",

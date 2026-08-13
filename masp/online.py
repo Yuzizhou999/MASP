@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 from .domain import (
     DomainError,
     LoadState,
+    SegmentKind,
     TaskState,
     TransportTask,
     Vehicle,
@@ -21,7 +22,7 @@ from .coordination import (
     RollingCycleRecord,
     RollingHorizonPlanner,
 )
-from .reservations import Reservation, ReservationTable
+from .reservations import Reservation, ReservationConflict, ReservationTable
 from .simulator import DeterministicSimulator
 from .topology import MapTopology
 
@@ -33,13 +34,9 @@ class OnlinePlanProposal:
     nominal_until_ms: int
     safe_until_ms: int
     reservations: tuple[Reservation, ...]
+    candidate_plan: VehiclePlan | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        committed_segments = [
-            segment.to_dict()
-            for segment in self.plan.segments
-            if segment.end_ms <= self.safe_until_ms
-        ]
         return {
             "proposalId": self.proposal_id,
             "status": "PROPOSED",
@@ -52,8 +49,13 @@ class OnlinePlanProposal:
             "nominalUntilMs": self.nominal_until_ms,
             "safeUntilMs": self.safe_until_ms,
             "extendedToSafeNode": self.safe_until_ms > self.nominal_until_ms,
-            "committedSegments": committed_segments,
+            "committedSegments": [segment.to_dict() for segment in self.plan.segments],
             "plan": self.plan.to_dict(),
+            "candidatePlan": (
+                self.candidate_plan.to_dict()
+                if self.candidate_plan is not None
+                else self.plan.to_dict()
+            ),
         }
 
 
@@ -153,6 +155,7 @@ class OnlineDispatchRuntime:
         self.accepted_plans: list[VehiclePlan] = []
         self.task_submission_count = 0
         self.telemetry_update_count = 0
+        self.continuation_plan_count = 0
 
     @property
     def now_ms(self) -> int:
@@ -181,17 +184,30 @@ class OnlineDispatchRuntime:
         vehicles = [
             vehicle
             for vehicle in self.simulator.vehicles.values()
-            if vehicle.state is VehicleState.IDLE
+            if vehicle.state in {
+                VehicleState.IDLE,
+                VehicleState.TO_PICKUP,
+                VehicleState.TO_DROPOFF,
+            }
             and vehicle.current_node_id is not None
-            and vehicle.active_task_id is None
             and vehicle.available_at_ms <= self.now_ms
         ]
+        active_task_ids = {
+            vehicle.active_task_id
+            for vehicle in vehicles
+            if vehicle.active_task_id is not None
+        }
         tasks = [
             task
             for task in self.simulator.tasks.values()
             if task.task_id in self.simulator.released_task_ids
-            and task.state is TaskState.QUEUED
-            and task.assigned_vehicle_id is None
+            and (
+                (
+                    task.state is TaskState.QUEUED
+                    and task.assigned_vehicle_id is None
+                )
+                or task.task_id in active_task_ids
+            )
         ]
         planned: DispatchCycleProposal = self.planner.plan_cycle(
             vehicles,
@@ -224,22 +240,139 @@ class OnlineDispatchRuntime:
             for item in planned.cycle.commitments
         }
         proposals: list[OnlinePlanProposal] = []
-        for plan in planned.plans:
-            commitment = commitments[(plan.vehicle_id, plan.task_id)]
+        staged_reservations = self.reservations.clone()
+        for candidate_plan in planned.plans:
+            commitment = commitments[(candidate_plan.vehicle_id, candidate_plan.task_id)]
+            plan = self._committed_prefix(candidate_plan, commitment.safe_until_ms)
             proposal_id = self._proposal_id(plan)
+            reservations = self._planning_reservations(candidate_plan, plan)
+            try:
+                staged_reservations.replace_vehicle(plan.vehicle_id, reservations)
+            except ReservationConflict:
+                continue
             proposal = OnlinePlanProposal(
                 proposal_id=proposal_id,
                 plan=plan,
                 nominal_until_ms=commitment.nominal_until_ms,
                 safe_until_ms=commitment.safe_until_ms,
-                reservations=planned.proposed_reservations.for_vehicle(
-                    plan.vehicle_id
-                ),
+                reservations=reservations,
+                candidate_plan=candidate_plan,
             )
             self.proposals[proposal_id] = proposal
             self.pending_proposal_ids.add(proposal_id)
             proposals.append(proposal)
         return tuple(proposals)
+
+    @property
+    def next_replan_due_ms(self) -> int | None:
+        boundaries = [
+            vehicle.available_at_ms
+            for vehicle in self.simulator.vehicles.values()
+            if vehicle.active_task_id is not None
+            and vehicle.available_at_ms > self.now_ms
+        ]
+        return min(boundaries, default=None)
+
+    def _committed_prefix(
+        self, candidate_plan: VehiclePlan, safe_until_ms: int
+    ) -> VehiclePlan:
+        segments = list(
+            segment
+            for segment in candidate_plan.segments
+            if segment.end_ms <= safe_until_ms
+        )
+        if not segments or segments[-1].end_ms != safe_until_ms:
+            containing = next(
+                (
+                    segment
+                    for segment in candidate_plan.segments
+                    if segment.start_ms < safe_until_ms < segment.end_ms
+                ),
+                None,
+            )
+            if containing is None or containing.kind is not SegmentKind.WAIT:
+                raise DomainError(
+                    "online.commitment.boundary",
+                    "safe commitment must end on a complete segment or split a wait",
+                )
+            vehicle = self.simulator.vehicles[candidate_plan.vehicle_id]
+            if not self.topology.wait_allowed(
+                containing.end_node_id or "", vehicle.robot_group
+            ):
+                raise DomainError(
+                    "online.commitment.wait_disallowed",
+                    "a commitment may split a wait only at a safe waiting node",
+                )
+            segments.append(replace(containing, end_ms=safe_until_ms))
+        return replace(
+            candidate_plan,
+            committed_until_ms=safe_until_ms,
+            segments=tuple(segments),
+        )
+
+    def _planning_reservations(
+        self, candidate_plan: VehiclePlan, committed_plan: VehiclePlan
+    ) -> tuple[Reservation, ...]:
+        vehicle = self.simulator.vehicles[committed_plan.vehicle_id]
+        task = self.simulator.tasks[committed_plan.task_id]
+        continuing = task.state in {
+            TaskState.EN_ROUTE_PICKUP,
+            TaskState.EN_ROUTE_DROPOFF,
+        }
+        committed = self.planner.validator.validate(
+            committed_plan,
+            vehicle,
+            task,
+            require_complete=False,
+            allow_continuation=continuing,
+        )
+        candidate = self.planner.validator.validate(
+            candidate_plan,
+            vehicle,
+            task,
+            allow_continuation=continuing,
+        )
+        boundary_ms = committed_plan.committed_until_ms
+        rows = list(committed.reservations())
+        for reservation in candidate.reservations():
+            if reservation.end_ms <= boundary_ms:
+                continue
+            if reservation.start_ms < boundary_ms:
+                reservation = replace(
+                    reservation,
+                    reservation_id=f"{reservation.reservation_id}:tentative-tail",
+                    start_ms=boundary_ms,
+                    committed=False,
+                )
+            else:
+                reservation = replace(reservation, committed=False)
+            rows.append(reservation)
+        if boundary_ms < self.end_time_ms:
+            rows.append(
+                self.planner._hold(
+                    vehicle,
+                    plan_id=committed_plan.plan_id,
+                    node_id=committed.final_node_id,
+                    start_ms=boundary_ms,
+                    end_ms=self.end_time_ms,
+                    label="idle-tail",
+                )
+            )
+        if candidate_plan.segments[-1].end_ms < self.end_time_ms:
+            rows.append(
+                replace(
+                    self.planner._hold(
+                        vehicle,
+                        plan_id=candidate_plan.plan_id,
+                        node_id=candidate.final_node_id,
+                        start_ms=candidate_plan.segments[-1].end_ms,
+                        end_ms=self.end_time_ms,
+                        label="tentative-idle-tail",
+                    ),
+                    committed=False,
+                )
+            )
+        return tuple(rows)
 
     def acknowledge_plan(
         self,
@@ -276,6 +409,7 @@ class OnlineDispatchRuntime:
                     f"plan {plan.plan_id!r} expects vehicle revision "
                     f"{plan.based_on_vehicle_revision}, actual revision is {vehicle.revision}",
                 )
+            continuing = plan.continuation
             self.simulator.add_plan(plan)
             self.reservations.replace_vehicle(
                 plan.vehicle_id,
@@ -284,6 +418,8 @@ class OnlineDispatchRuntime:
             self.plan_counts[plan.vehicle_id] += 1
             self.pair_retry_until.pop((plan.vehicle_id, plan.task_id), None)
             self.accepted_plans.append(plan)
+            if continuing:
+                self.continuation_plan_count += 1
 
         acknowledgement = PlanAcknowledgement(
             proposal_id=proposal_id,
@@ -416,6 +552,7 @@ class OnlineDispatchRuntime:
             ),
             "pendingPlanAckCount": len(self.pending_proposal_ids),
             "telemetryUpdateCount": self.telemetry_update_count,
+            "continuationPlanCount": self.continuation_plan_count,
         }
         return result
 
@@ -504,7 +641,15 @@ def run_online_scenario(
             if task_index < len(task_rows)
             else runtime.end_time_ms
         )
-        next_time_ms = min(next_cycle_ms, next_release_ms, runtime.end_time_ms)
+        next_commitment_ms = runtime.next_replan_due_ms
+        next_time_ms = min(
+            next_cycle_ms,
+            next_release_ms,
+            runtime.end_time_ms,
+            next_commitment_ms
+            if next_commitment_ms is not None
+            else runtime.end_time_ms,
+        )
         runtime.advance_to(next_time_ms)
 
         submitted = False
@@ -524,7 +669,8 @@ def run_online_scenario(
         if submitted:
             runtime.advance_to(next_time_ms)
 
-        if next_time_ms == next_cycle_ms or submitted:
+        commitment_due = next_commitment_ms == next_time_ms
+        if next_time_ms == next_cycle_ms or submitted or commitment_due:
             proposals = runtime.plan_cycle()
             for proposal in proposals:
                 runtime.acknowledge_plan(

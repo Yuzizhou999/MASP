@@ -332,6 +332,7 @@ class VehiclePlan:
     horizon_end_ms: int
     committed_until_ms: int
     segments: tuple[PlanSegment, ...]
+    continuation: bool = False
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> VehiclePlan:
@@ -346,6 +347,7 @@ class VehiclePlan:
             horizon_end_ms=int(value["horizonEndMs"]),
             committed_until_ms=int(value["committedUntilMs"]),
             segments=tuple(PlanSegment.from_dict(item) for item in value["segments"]),
+            continuation=bool(value.get("continuation", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -359,6 +361,7 @@ class VehiclePlan:
             "createdAtMs": self.created_at_ms,
             "horizonEndMs": self.horizon_end_ms,
             "committedUntilMs": self.committed_until_ms,
+            "continuation": self.continuation,
             "segments": [segment.to_dict() for segment in self.segments],
         }
 
@@ -376,7 +379,7 @@ def projected_vehicle_revision(plan: VehiclePlan) -> int:
     reposition_completion = int(dropoff_index < len(plan.segments) - 1)
     return (
         plan.based_on_vehicle_revision
-        + 1
+        + int(not plan.continuation)
         + 2 * len(plan.segments)
         + reposition_completion
     )

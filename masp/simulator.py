@@ -82,7 +82,10 @@ class DeterministicSimulator:
                 {"taskId": task.task_id},
             )
 
-        planned_tasks: set[str] = set()
+        planned_tasks: dict[str, str] = {}
+        projected_tasks = {
+            task_id: replace(task) for task_id, task in self.tasks.items()
+        }
         validator = PlanValidator(self.topology)
         raw_plans_by_vehicle: dict[str, list[VehiclePlan]] = {}
         for plan in self.plans.values():
@@ -102,7 +105,7 @@ class DeterministicSimulator:
                 raw_plans_by_vehicle[vehicle_id],
                 key=lambda item: (item.created_at_ms, item.plan_id),
             ):
-                task = self.tasks.get(plan.task_id)
+                task = projected_tasks.get(plan.task_id)
                 if task is None:
                     raise DomainError(
                         "scenario.plan.reference",
@@ -113,24 +116,57 @@ class DeterministicSimulator:
                         "scenario.vehicle.plan_overlap",
                         f"vehicle {vehicle_id!r} receives a new task before becoming idle",
                     )
-                if plan.task_id in planned_tasks:
+                if plan.continuation:
+                    if planned_tasks.get(plan.task_id) != vehicle_id:
+                        raise DomainError(
+                            "scenario.task.continuation_without_assignment",
+                            "a continuation must follow the same vehicle's task prefix",
+                        )
+                elif plan.task_id in planned_tasks:
                     raise DomainError(
                         "scenario.task.multiple_plans",
                         "a task cannot be assigned to more than one vehicle",
                     )
-                validated = validator.validate(plan, projected, task)
+                validated = validator.validate(
+                    plan,
+                    projected,
+                    task,
+                    require_complete=False,
+                    allow_continuation=plan.continuation,
+                )
                 if plan.horizon_end_ms > self.end_time_ms:
                     raise DomainError(
                         "scenario.plan.after_end",
                         f"plan {plan.plan_id!r} exceeds scenario endTimeMs",
                     )
-                planned_tasks.add(plan.task_id)
+                if not plan.continuation:
+                    planned_tasks[plan.task_id] = vehicle_id
+                    task.assigned_vehicle_id = vehicle_id
+                    task.state = TaskState.EN_ROUTE_PICKUP
+                    projected.active_task_id = task.task_id
                 validated_for_vehicle.append(validated)
                 previous_end_ms = plan.segments[-1].end_ms
                 projected.current_node_id = validated.final_node_id
                 projected.current_edge_id = None
                 projected.load_state = validated.final_load_state
-                projected.state = VehicleState.IDLE
+                segment_kinds = {segment.kind for segment in plan.segments}
+                if SegmentKind.DROPOFF in segment_kinds:
+                    task.state = TaskState.COMPLETED
+                    projected.active_task_id = None
+                    projected.payload_id = None
+                    projected.state = VehicleState.IDLE
+                elif SegmentKind.PICKUP in segment_kinds:
+                    task.state = TaskState.EN_ROUTE_DROPOFF
+                    projected.active_task_id = task.task_id
+                    projected.payload_id = task.payload_id or task.task_id
+                    projected.state = VehicleState.TO_DROPOFF
+                else:
+                    projected.active_task_id = task.task_id
+                    projected.state = (
+                        VehicleState.TO_DROPOFF
+                        if task.state is TaskState.EN_ROUTE_DROPOFF
+                        else VehicleState.TO_PICKUP
+                    )
                 projected.revision = projected_vehicle_revision(plan)
                 projected.available_at_ms = previous_end_ms
             self._plans_by_vehicle[vehicle_id] = validated_for_vehicle
@@ -145,7 +181,7 @@ class DeterministicSimulator:
                     "scenario.plan.reference",
                     f"plan {plan.plan_id!r} references an unknown vehicle or task",
                 )
-            self._schedule_plan(plan)
+            self._schedule_plan(plan, continuation=plan.continuation)
 
         reservation_batch: list[Reservation] = []
         for vehicle_id in sorted(self.vehicles):
@@ -243,9 +279,18 @@ class DeterministicSimulator:
         )
         return task
 
-    def add_plan(self, plan: VehiclePlan) -> ValidatedPlan:
+    def add_plan(
+        self, plan: VehiclePlan, *, allow_continuation: bool | None = None
+    ) -> ValidatedPlan:
         """Validate, reserve, and inject one acknowledged plan at runtime."""
 
+        if allow_continuation is None:
+            allow_continuation = plan.continuation
+        elif bool(allow_continuation) != plan.continuation:
+            raise DomainError(
+                "online.plan.continuation_mismatch",
+                "runtime continuation flag does not match the plan",
+            )
         existing = self.plans.get(plan.plan_id)
         if existing is not None:
             if existing == plan:
@@ -275,12 +320,25 @@ class DeterministicSimulator:
                 "online.plan.before_release",
                 f"plan {plan.plan_id!r} was acknowledged before task release",
             )
-        if task.state is not TaskState.QUEUED or vehicle.state is not VehicleState.IDLE:
+        if allow_continuation:
+            if (
+                vehicle.active_task_id != task.task_id
+                or task.assigned_vehicle_id != vehicle.vehicle_id
+                or task.state not in {
+                    TaskState.EN_ROUTE_PICKUP,
+                    TaskState.EN_ROUTE_DROPOFF,
+                }
+            ):
+                raise DomainError(
+                    "online.plan.continuation_state_changed",
+                    f"plan {plan.plan_id!r} no longer matches the active task",
+                )
+        elif task.state is not TaskState.QUEUED or vehicle.state is not VehicleState.IDLE:
             raise DomainError(
                 "online.plan.state_changed",
                 f"plan {plan.plan_id!r} no longer matches an idle vehicle and queued task",
             )
-        if any(
+        if not allow_continuation and any(
             item.plan.task_id == task.task_id
             for rows in self._plans_by_vehicle.values()
             for item in rows
@@ -290,7 +348,13 @@ class DeterministicSimulator:
                 f"task {task.task_id!r} already has a plan",
             )
 
-        validated = PlanValidator(self.topology).validate(plan, vehicle, task)
+        validated = PlanValidator(self.topology).validate(
+            plan,
+            vehicle,
+            task,
+            require_complete=False,
+            allow_continuation=allow_continuation,
+        )
         if plan.horizon_end_ms > self.end_time_ms:
             raise DomainError(
                 "online.plan.after_end",
@@ -325,7 +389,7 @@ class DeterministicSimulator:
         self.reservations.replace_vehicle(vehicle.vehicle_id, replacement)
         self.plans[plan.plan_id] = plan
         self._plans_by_vehicle.setdefault(vehicle.vehicle_id, []).append(validated)
-        self._schedule_plan(plan)
+        self._schedule_plan(plan, continuation=allow_continuation)
         return validated
 
     @staticmethod
@@ -354,15 +418,17 @@ class DeterministicSimulator:
             ),
         )
 
-    def _schedule_plan(self, plan: VehiclePlan) -> None:
+    def _schedule_plan(self, plan: VehiclePlan, *, continuation: bool = False) -> None:
         lifecycle_payload = {
             "planId": plan.plan_id,
             "taskId": plan.task_id,
             "vehicleId": plan.vehicle_id,
+            "continuation": continuation,
         }
-        self.event_queue.schedule(
-            plan.created_at_ms, EventType.TASK_ASSIGNED, lifecycle_payload
-        )
+        if not continuation:
+            self.event_queue.schedule(
+                plan.created_at_ms, EventType.TASK_ASSIGNED, lifecycle_payload
+            )
         self.event_queue.schedule(
             plan.created_at_ms, EventType.PLAN_COMPUTED, lifecycle_payload
         )
@@ -445,13 +511,14 @@ class DeterministicSimulator:
                     f"plan {plan.plan_id!r} expects vehicle revision "
                     f"{plan.based_on_vehicle_revision}, actual revision is {vehicle.revision}",
                 )
-            task.transition(TaskState.EN_ROUTE_PICKUP, event.time_ms)
-            vehicle.transition(VehicleState.TO_PICKUP, event.time_ms)
-            vehicle.active_task_id = task.task_id
+            if not bool(payload.get("continuation", False)):
+                task.transition(TaskState.EN_ROUTE_PICKUP, event.time_ms)
+                vehicle.transition(VehicleState.TO_PICKUP, event.time_ms)
+                vehicle.active_task_id = task.task_id
             vehicle.plan_id = plan.plan_id
             vehicle.plan_revision = plan.revision
             vehicle.committed_until_ms = plan.committed_until_ms
-            vehicle.available_at_ms = plan.segments[-1].end_ms
+            vehicle.available_at_ms = plan.committed_until_ms
             return
         if segment is None:
             raise DomainError("event.segment.missing", "action event has no plan segment")
@@ -530,6 +597,22 @@ class DeterministicSimulator:
                 vehicle.plan_revision = None
                 vehicle.committed_until_ms = event.time_ms
 
+        segment_completed = event.event_type in {
+            EventType.VEHICLE_EXIT_EDGE,
+            EventType.VEHICLE_WAIT_ENDED,
+            EventType.PICKUP_COMPLETED,
+            EventType.DROPOFF_COMPLETED,
+        }
+        if plan is not None and segment is plan.segments[-1] and segment_completed:
+            vehicle.available_at_ms = event.time_ms
+            vehicle.committed_until_ms = event.time_ms
+            if task.state in {
+                TaskState.EN_ROUTE_PICKUP,
+                TaskState.EN_ROUTE_DROPOFF,
+            }:
+                vehicle.plan_id = None
+                vehicle.plan_revision = None
+
     def _record(self, event: SimulationEvent) -> None:
         payload = dict(sorted(event.payload.items()))
         row: dict[str, Any] = {
@@ -576,6 +659,23 @@ class DeterministicSimulator:
             for task in completed
             if task.completed_at_ms is not None and task.picked_at_ms is not None
         ]
+        first_release_ms = min(
+            (task.release_time_ms for task in completed),
+            default=0,
+        )
+        last_completion_ms = max(
+            (
+                task.completed_at_ms
+                for task in completed
+                if task.completed_at_ms is not None
+            ),
+            default=None,
+        )
+        completion_span_ms = (
+            max(1, int(last_completion_ms) - first_release_ms)
+            if last_completion_ms is not None
+            else None
+        )
         task_states = Counter(task.state.value for task in self.tasks.values())
         return {
             "schemaVersion": 1,
@@ -596,6 +696,13 @@ class DeterministicSimulator:
                 "completedDropoffsPerHour": round(
                     len(completed) * 3_600_000 / self.end_time_ms, 6
                 ),
+                "completedDropoffsPerActiveHour": (
+                    round(len(completed) * 3_600_000 / completion_span_ms, 6)
+                    if completion_span_ms is not None
+                    else 0.0
+                ),
+                "completionSpanMs": completion_span_ms,
+                "lastTaskCompletedAtMs": last_completion_ms,
                 "meanTaskCycleTimeMs": self._mean_or_none(cycle_times),
                 "meanTaskQueueTimeMs": self._mean_or_none(queue_times),
                 "meanPickupToDropoffTimeMs": self._mean_or_none(delivery_times),

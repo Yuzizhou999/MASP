@@ -35,6 +35,8 @@ def test_single_vehicle_completes_pickup_and_dropoff_deterministically() -> None
     assert first["eventDigestSha256"] == second["eventDigestSha256"]
     assert first["eventLog"] == second["eventLog"]
     assert first["metrics"]["completedTaskCount"] == 1
+    assert first["metrics"]["completionSpanMs"] == first["tasks"][0]["completedAtMs"]
+    assert first["metrics"]["completedDropoffsPerActiveHour"] > 0
     assert first["metrics"]["reservationConflictRejections"] == 0
     assert first["tasks"][0]["state"] == "COMPLETED"
     assert first["vehicles"][0]["state"] == "IDLE"

@@ -120,6 +120,79 @@ class TaskAllocator:
             priority_credit_ms=task.priority_class * self.priority_credit_ms,
         )
 
+    def continuation_cost(
+        self,
+        vehicle: Vehicle,
+        task: TransportTask,
+        now_ms: int,
+    ) -> AssignmentCost | None:
+        """Estimate the remaining cost without changing an active assignment."""
+
+        if (
+            vehicle.current_node_id is None
+            or vehicle.fault_code is not None
+            or vehicle.active_task_id != task.task_id
+            or task.assigned_vehicle_id != vehicle.vehicle_id
+            or vehicle.robot_group != task.required_robot_group
+        ):
+            return None
+        if task.state is TaskState.EN_ROUTE_PICKUP:
+            if vehicle.load_state is not LoadState.EMPTY:
+                return None
+            empty_travel = self.routes.shortest_travel_ms(
+                vehicle.robot_group,
+                vehicle.current_node_id,
+                task.pickup_node_id,
+                LoadState.EMPTY,
+            )
+            loaded_travel = self.routes.shortest_travel_ms(
+                vehicle.robot_group,
+                task.pickup_node_id,
+                task.dropoff_node_id,
+                LoadState.LOADED,
+            )
+            pickup_service_ms = task.pickup_service_ms
+        elif task.state is TaskState.EN_ROUTE_DROPOFF:
+            if vehicle.load_state is not LoadState.LOADED:
+                return None
+            empty_travel = 0
+            loaded_travel = self.routes.shortest_travel_ms(
+                vehicle.robot_group,
+                vehicle.current_node_id,
+                task.dropoff_node_id,
+                LoadState.LOADED,
+            )
+            pickup_service_ms = 0
+        else:
+            return None
+        if empty_travel is None or loaded_travel is None:
+            return None
+        estimated_completion = (
+            now_ms
+            + empty_travel
+            + pickup_service_ms
+            + loaded_travel
+            + task.dropoff_service_ms
+        )
+        lateness = (
+            max(0, estimated_completion - task.due_time_ms)
+            if task.due_time_ms is not None
+            else 0
+        )
+        return AssignmentCost(
+            empty_travel_ms=empty_travel,
+            loaded_travel_ms=loaded_travel,
+            pickup_service_ms=pickup_service_ms,
+            dropoff_service_ms=task.dropoff_service_ms,
+            due_time_penalty_ms=lateness * self.due_time_penalty_factor,
+            task_age_credit_ms=(
+                max(0, now_ms - task.release_time_ms)
+                // 1000
+                * self.age_credit_per_second_ms
+            ),
+            priority_credit_ms=task.priority_class * self.priority_credit_ms,
+        )
+
     # 全局最优配对
     def assign(
         self,

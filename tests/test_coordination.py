@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-from masp.domain import LoadState, SegmentKind, TransportTask, Vehicle
+from masp.domain import (
+    LoadState,
+    SegmentKind,
+    TaskState,
+    TransportTask,
+    Vehicle,
+    VehicleState,
+)
 from masp.motion import EdgeTravelTimeModel
 from masp.coordination import CandidateScore, RollingHorizonPlanner
 from masp.reservations import ReservationTable
@@ -138,6 +145,57 @@ def test_priority_candidates_only_permute_local_conflict_components(
         )
 
 
+def test_active_task_component_precedes_new_task_component(
+    dispatch_documents,
+) -> None:
+    model, conflicts, workstations, profiles, scheduler, zones = dispatch_documents
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
+    planner = RollingHorizonPlanner(
+        MapTopology(model, conflicts, workstations, zones),
+        model,
+        profiles,
+        scheduler,
+        zones,
+        policy="congestion",
+        seed=0,
+    )
+    vehicles = [Vehicle.from_dict(item) for item in scenario["vehicles"]]
+    defaults = scheduler["serviceDefaults"]
+    tasks = [
+        TransportTask.from_dict(
+            item,
+            int(defaults["pickupServiceMs"]),
+            int(defaults["dropoffServiceMs"]),
+        )
+        for item in scenario["tasks"]
+        if item["releaseTimeMs"] == 0
+    ]
+    proposals = planner.allocator.assign(vehicles, tasks, 0)
+    projections, tasks_by_id = planner._validate_inputs(vehicles, tasks)
+    queued = proposals[0]
+    active = proposals[-1]
+    active_task = tasks_by_id[active.task_id]
+    active_vehicle = projections[active.vehicle_id]
+    active_task.state = TaskState.EN_ROUTE_PICKUP
+    active_task.assigned_vehicle_id = active.vehicle_id
+    active_vehicle.state = VehicleState.TO_PICKUP
+    active_vehicle.active_task_id = active.task_id
+
+    order = planner._localized_order(
+        planner.priority_strategies[0],
+        ((queued,), (active,)),
+        tasks_by_id,
+        ReservationTable(),
+        projections,
+        0,
+        0,
+        0,
+        0,
+    )
+
+    assert order == (active, queued)
+
+
 def test_idle_cycles_jump_to_the_next_release_time(dispatch_documents) -> None:
     scenario = deepcopy(read_json("scenarios/rolling-dispatch-benchmark.json"))
     scenario["tasks"] = scenario["tasks"][:1]
@@ -183,6 +241,79 @@ def test_failed_pairs_do_not_spin_without_a_future_state_change(
     assert planning.unplanned_task_ids == (task.task_id,)
     assert len(planning.cycles) == 1
     assert attempts == len(vehicles)
+
+
+def test_failed_continuation_is_attempted_once_per_online_cycle(
+    dispatch_documents, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model, conflicts, workstations, profiles, scheduler, zones = dispatch_documents
+    scenario = read_json("scenarios/rolling-dispatch-benchmark.json")
+    planner = RollingHorizonPlanner(
+        MapTopology(model, conflicts, workstations, zones),
+        model,
+        profiles,
+        scheduler,
+        zones,
+        policy="congestion",
+        seed=0,
+    )
+    vehicle = Vehicle.from_dict(scenario["vehicles"][0])
+    defaults = scheduler["serviceDefaults"]
+    task = TransportTask.from_dict(
+        scenario["tasks"][0],
+        int(defaults["pickupServiceMs"]),
+        int(defaults["dropoffServiceMs"]),
+    )
+    vehicle.active_task_id = task.task_id
+    vehicle.state = VehicleState.TO_PICKUP
+    task.assigned_vehicle_id = vehicle.vehicle_id
+    task.state = TaskState.EN_ROUTE_PICKUP
+    reservations = ReservationTable()
+    reservations.insert_batch(
+        (
+            planner._hold(
+                vehicle,
+                plan_id="active-hold",
+                node_id=vehicle.current_node_id or "",
+                start_ms=0,
+                end_ms=int(scenario["endTimeMs"]),
+                label="idle-tail",
+            ),
+        )
+    )
+    attempts = 0
+
+    def fail_plan(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise SippPlanningError("sipp.no_schedule", "forced continuation failure")
+
+    monkeypatch.setattr(planner.sipp, "plan_remaining_task", fail_plan)
+
+    proposal = planner.plan_cycle(
+        [vehicle],
+        [task],
+        0,
+        int(scenario["endTimeMs"]),
+        reservations,
+    )
+
+    assert proposal.plans == ()
+    assert attempts == 1
+    assert len(proposal.cycle.candidates) == 1
+    assert not proposal.cycle.deadline_exhausted
+
+    attempts = 0
+    cooled = planner.plan_cycle(
+        [vehicle],
+        [task],
+        0,
+        int(scenario["endTimeMs"]),
+        reservations,
+        excluded_pairs=frozenset({(vehicle.vehicle_id, task.task_id)}),
+    )
+    assert cooled.plans == ()
+    assert attempts == 0
 
 
 def test_top_k_rh_pp_is_safe_and_completes_stream(

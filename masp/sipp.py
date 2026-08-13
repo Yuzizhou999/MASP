@@ -10,6 +10,7 @@ from .domain import (
     LoadState,
     PlanSegment,
     SegmentKind,
+    TaskState,
     TransportTask,
     Vehicle,
     VehiclePlan,
@@ -87,6 +88,63 @@ class ContinuousTimeSippPlanner:
         *,
         deadline_ns: int | None = None,
     ) -> PlannedTask:
+        return self._plan_task_from_phase(
+            vehicle,
+            task,
+            now_ms,
+            horizon_end_ms,
+            reservations,
+            plan_number,
+            pickup_completed=False,
+            continuation=False,
+            deadline_ns=deadline_ns,
+        )
+
+    def plan_remaining_task(
+        self,
+        vehicle: Vehicle,
+        task: TransportTask,
+        now_ms: int,
+        horizon_end_ms: int,
+        reservations: ReservationTable,
+        plan_number: int,
+        *,
+        deadline_ns: int | None = None,
+    ) -> PlannedTask:
+        if task.state is TaskState.EN_ROUTE_PICKUP:
+            pickup_completed = False
+        elif task.state is TaskState.EN_ROUTE_DROPOFF:
+            pickup_completed = True
+        else:
+            raise SippPlanningError(
+                "sipp.continuation.task_state",
+                f"task {task.task_id!r} cannot be continued from {task.state.value}",
+            )
+        return self._plan_task_from_phase(
+            vehicle,
+            task,
+            now_ms,
+            horizon_end_ms,
+            reservations,
+            plan_number,
+            pickup_completed=pickup_completed,
+            continuation=True,
+            deadline_ns=deadline_ns,
+        )
+
+    def _plan_task_from_phase(
+        self,
+        vehicle: Vehicle,
+        task: TransportTask,
+        now_ms: int,
+        horizon_end_ms: int,
+        reservations: ReservationTable,
+        plan_number: int,
+        *,
+        pickup_completed: bool,
+        continuation: bool,
+        deadline_ns: int | None = None,
+    ) -> PlannedTask:
         # 要求车辆停在节点上，而不是在边上
         if vehicle.current_node_id is None:
             raise SippPlanningError(
@@ -94,16 +152,27 @@ class ContinuousTimeSippPlanner:
             )
         self._check_deadline(deadline_ns)
         # 分别为空载、载货、恢复路线生成候选路线
-        empty_routes = self.routes.candidate_routes(
-            vehicle.robot_group,
-            vehicle.current_node_id,
-            task.pickup_node_id,
-            LoadState.EMPTY,
-            self.route_limit,
+        empty_routes = (
+            (
+                SpatialRoute(
+                    vehicle.current_node_id,
+                    vehicle.current_node_id,
+                    (),
+                    0,
+                ),
+            )
+            if pickup_completed
+            else self.routes.candidate_routes(
+                vehicle.robot_group,
+                vehicle.current_node_id,
+                task.pickup_node_id,
+                LoadState.EMPTY,
+                self.route_limit,
+            )
         )
         loaded_routes = self.routes.candidate_routes(
             vehicle.robot_group,
-            task.pickup_node_id,
+            vehicle.current_node_id if pickup_completed else task.pickup_node_id,
             task.dropoff_node_id,
             LoadState.LOADED,
             self.route_limit,
@@ -179,7 +248,7 @@ class ContinuousTimeSippPlanner:
                 lower_bound = (
                     now_ms
                     + empty_route.free_flow_travel_ms
-                    + task.pickup_service_ms
+                    + (0 if pickup_completed else task.pickup_service_ms)
                     + loaded_route.free_flow_travel_ms
                     + task.dropoff_service_ms
                     + recovery_route.free_flow_travel_ms
@@ -212,6 +281,7 @@ class ContinuousTimeSippPlanner:
                             empty_route,
                             loaded_route,
                             recovery_route,
+                            pickup_completed=pickup_completed,
                             deadline_ns=deadline_ns,
                         )
                         completion = segments[-1].end_ms
@@ -280,6 +350,7 @@ class ContinuousTimeSippPlanner:
             horizon_end_ms=horizon_end_ms,
             committed_until_ms=completion,
             segments=segments,
+            continuation=continuation,
         )
         return PlannedTask(
             plan=plan,
@@ -407,6 +478,7 @@ class ContinuousTimeSippPlanner:
         loaded_route: SpatialRoute,
         recovery_route: SpatialRoute,
         *,
+        pickup_completed: bool = False,
         deadline_ns: int | None = None,
     ) -> tuple[PlanSegment, ...]:
         self._check_deadline(deadline_ns)
@@ -421,33 +493,34 @@ class ContinuousTimeSippPlanner:
                 vehicle.current_node_id or "",
                 current_ms,
                 shifted,
-                LoadState.EMPTY,
+                LoadState.LOADED if pickup_completed else LoadState.EMPTY,
                 reservations,
             )
             current_ms = shifted
 
-        current_ms = self._schedule_route(
-            segments,
-            vehicle,
-            empty_route,
-            current_ms,
-            LoadState.EMPTY,
-            reservations,
-            horizon_end_ms,
-            deadline_ns=deadline_ns,
-        )
-        current_ms = self._append_service(
-            segments,
-            vehicle,
-            task.pickup_node_id,
-            current_ms,
-            task.pickup_service_ms,
-            SegmentKind.PICKUP,
-            LoadState.EMPTY,
-            reservations,
-            horizon_end_ms,
-            deadline_ns=deadline_ns,
-        )
+        if not pickup_completed:
+            current_ms = self._schedule_route(
+                segments,
+                vehicle,
+                empty_route,
+                current_ms,
+                LoadState.EMPTY,
+                reservations,
+                horizon_end_ms,
+                deadline_ns=deadline_ns,
+            )
+            current_ms = self._append_service(
+                segments,
+                vehicle,
+                task.pickup_node_id,
+                current_ms,
+                task.pickup_service_ms,
+                SegmentKind.PICKUP,
+                LoadState.EMPTY,
+                reservations,
+                horizon_end_ms,
+                deadline_ns=deadline_ns,
+            )
         current_ms = self._schedule_route(
             segments,
             vehicle,

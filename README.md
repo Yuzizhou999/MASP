@@ -25,10 +25,15 @@ Core modules use domain names rather than implementation-stage names:
 - `planning.py`: task assignment and base task planning;
 - `coordination.py`: rolling-horizon candidate ordering and local conflict planning;
 - `online.py`: task submission, plan proposal, acknowledgement and telemetry runtime;
-- `rl_priority.py`: observation encoder, PPO policy and checkpoint loading;
+- `rl_priority.py`: observation encoder, oracle-supervised priority policy, optional PPO fine-tuning and checkpoint loading;
 - `sipp.py`, `reservations.py`: collision-free timing and resource ownership;
 - `deadlock.py`, `recovery.py`: wait-graph supervision and recovery execution;
 - `recovery_scenario.py`: deterministic recovery acceptance scenario.
+
+Online dispatch uses real RH-PP commitment windows: only the complete segment
+prefix ending at `safeUntilMs` is acknowledged and reserved. The vehicle-task
+binding and completed service phase survive that boundary, while the uncommitted
+route tail is discarded and replanned from the safe node in a continuation plan.
 
 ## Quick start
 

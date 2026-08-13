@@ -27,7 +27,7 @@ Tools are named by operation and responsibility.
 
 | Command | Purpose |
 |---|---|
-| `train_priority_policy.py` | Capture rolling conflict states and train PPO |
+| `train_priority_policy.py` | Label rolling conflict states with safe SIPP enumeration and train the priority policy |
 | `build_dispatch_dashboard.py` | Build a standalone replay from a run directory |
 | `build_unified_scene_model.py` | Build compact geometry for visualization |
 

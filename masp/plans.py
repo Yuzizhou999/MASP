@@ -6,9 +6,11 @@ from .domain import (
     DomainError,
     LoadState,
     SegmentKind,
+    TaskState,
     TransportTask,
     Vehicle,
     VehiclePlan,
+    VehicleState,
 )
 from .reservations import Reservation
 from .topology import MapTopology
@@ -60,6 +62,9 @@ class PlanValidator:
         plan: VehiclePlan,
         vehicle: Vehicle,
         task: TransportTask,
+        *,
+        require_complete: bool = True,
+        allow_continuation: bool = False,
     ) -> ValidatedPlan:
         # 计划与对象对得上号
         if plan.vehicle_id != vehicle.vehicle_id:
@@ -70,11 +75,47 @@ class PlanValidator:
             raise DomainError(
                 "plan.group.mismatch", "task and vehicle robot groups do not match"
             )
-        if vehicle.load_state is not LoadState.EMPTY:
-            raise DomainError(
-                "plan.initial_load.invalid",
-                "a pickup/dropoff transport plan must start with an empty vehicle",
-            )
+        if allow_continuation:
+            if (
+                vehicle.active_task_id != task.task_id
+                or task.assigned_vehicle_id != vehicle.vehicle_id
+            ):
+                raise DomainError(
+                    "plan.continuation.assignment",
+                    "a continuation must preserve the active vehicle-task assignment",
+                )
+            if task.state is TaskState.EN_ROUTE_PICKUP:
+                if vehicle.load_state is not LoadState.EMPTY or vehicle.state not in {
+                    VehicleState.TO_PICKUP,
+                    VehicleState.WAITING,
+                }:
+                    raise DomainError(
+                        "plan.continuation.pickup_state",
+                        "a pre-pickup continuation requires an empty vehicle en route to pickup",
+                    )
+                service_phase = "before_pickup"
+            elif task.state is TaskState.EN_ROUTE_DROPOFF:
+                if vehicle.load_state is not LoadState.LOADED or vehicle.state not in {
+                    VehicleState.TO_DROPOFF,
+                    VehicleState.WAITING,
+                }:
+                    raise DomainError(
+                        "plan.continuation.dropoff_state",
+                        "a post-pickup continuation requires a loaded vehicle en route to dropoff",
+                    )
+                service_phase = "after_pickup"
+            else:
+                raise DomainError(
+                    "plan.continuation.task_state",
+                    f"task state {task.state.value!r} cannot start a continuation",
+                )
+        else:
+            if vehicle.load_state is not LoadState.EMPTY:
+                raise DomainError(
+                    "plan.initial_load.invalid",
+                    "a new pickup/dropoff plan must start with an empty vehicle",
+                )
+            service_phase = "before_pickup"
         if plan.based_on_vehicle_revision != vehicle.revision:
             raise DomainError(
                 "plan.vehicle_revision.stale",
@@ -123,7 +164,6 @@ class PlanValidator:
                 "explicit plans must start while the vehicle is parked at a node",
             )
         load_state = vehicle.load_state
-        service_phase = "before_pickup"
         previous_end_ms: int | None = None
         resources_by_segment: dict[str, tuple[str, ...]] = {}
         # 逐段体检
@@ -235,7 +275,7 @@ class PlanValidator:
                 segment
             )
 
-        if service_phase != "after_dropoff":
+        if require_complete and service_phase != "after_dropoff":
             raise DomainError(
                 "plan.service.incomplete", "plan must finish one pickup and one dropoff"
             )
