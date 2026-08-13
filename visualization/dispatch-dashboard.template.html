@@ -51,10 +51,12 @@ body.map-expanded { overflow: hidden; }
 #map { display: block; width: 100%; height: 620px; touch-action: none; }
 .map-toolbar { position: absolute; top: 12px; left: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
 .map-toolbar button { padding: 5px 8px; background: rgb(255 255 255 / 92%); font-size: 12px; }
+.map-toolbar button[aria-pressed="true"] { color: #fff; border-color: #1d5eae; background: #1d5eae; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 9px 15px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
-.swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .swatch.fork { background: var(--fork); } .swatch.jack { background: var(--jack); } .swatch.shared { background: var(--shared); }
+.swatch.committed { width: 18px; height: 5px; border-radius: 0; border-top: 2px solid #20313f; background: rgb(32 49 63 / 16%); }
 .road { fill: none; stroke-width: .22; opacity: .3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .road.fork { stroke: var(--fork); } .road.jack { stroke: var(--jack); }
 .road.shared { stroke: #82919d; opacity: .22; }
@@ -65,11 +67,19 @@ body.map-expanded { overflow: hidden; }
 .node.LM { fill: #a6b4bf; } .node.AP { fill: #7c4da7; } .node.PP, .node.CP { fill: #3c9e7a; }
 .node-label { font-size: 2.1px; fill: #3a4a56; paint-order: stroke; stroke: #f8fbfd; stroke-width: .7px; opacity: 0; pointer-events: none; }
 .show-labels .node-label { opacity: .82; }
-.vehicle { cursor: pointer; stroke: #fff; stroke-width: .34; vector-effect: non-scaling-stroke; }
-.vehicle.fork { fill: var(--fork); } .vehicle.jack { fill: var(--jack); }
-.vehicle.selected { stroke: #14212b; stroke-width: .65; }
+.vehicle-group { cursor: pointer; }
+.vehicle-body { stroke: #fff; stroke-width: .34; vector-effect: non-scaling-stroke; }
+.vehicle-body.fork { fill: var(--fork); } .vehicle-body.jack { fill: var(--jack); }
+.vehicle-body.selected { stroke: #14212b; stroke-width: .7; }
+.vehicle-front { fill: #fff; stroke: #14212b; stroke-width: .18; vector-effect: non-scaling-stroke; pointer-events: none; }
 .vehicle-label { font-size: 2.3px; font-weight: 700; fill: #17232c; paint-order: stroke; stroke: #fff; stroke-width: .8px; pointer-events: none; }
-.route-highlight { fill: none; stroke: #192630; stroke-width: .85; opacity: .8; vector-effect: non-scaling-stroke; pointer-events: none; }
+.commitment-sweep { fill: none; stroke: #20313f; stroke-linecap: round; stroke-linejoin: round; opacity: .07; pointer-events: none; }
+.commitment-sweep.selected { opacity: .2; }
+.commitment-route { fill: none; stroke-width: .44; stroke-linecap: round; stroke-linejoin: round; opacity: .38; vector-effect: non-scaling-stroke; pointer-events: none; }
+.commitment-route.fork { stroke: var(--fork); } .commitment-route.jack { stroke: var(--jack); }
+.commitment-route.selected { stroke: #14212b; stroke-width: .92; opacity: .94; }
+.commitment-end { stroke: #fff; stroke-width: .28; vector-effect: non-scaling-stroke; pointer-events: none; }
+.commitment-end.fork { fill: var(--fork); } .commitment-end.jack { fill: var(--jack); }
 .side { display: grid; gap: 16px; }
 .controls { padding: 13px 15px; }
 .control-row { display: flex; align-items: center; gap: 8px; }
@@ -114,7 +124,7 @@ body.map-expanded { overflow: hidden; }
         <svg id="map" role="img" aria-label="仓库调度地图"></svg>
         <div class="map-toolbar"><button id="toggle-map-size" type="button" aria-pressed="false">放大地图</button><button id="focus-shared" type="button">聚焦共享区</button><button id="toggle-labels" type="button" aria-pressed="false">显示站点标签</button><button id="reset-view" type="button">重置视图</button></div>
       </div>
-      <div class="legend"><span><i class="swatch fork"></i>Fork 车</span><span><i class="swatch jack"></i>Jack 车</span><span><i class="swatch shared"></i>共享路径</span><span>紫色节点：工位 AP</span></div>
+      <div class="legend"><span><i class="swatch fork"></i>Fork 车体 2.0×1.0 m</span><span><i class="swatch jack"></i>Jack 车体 1.0×0.5 m</span><span><i class="swatch committed"></i>已承诺路线与保守扫掠带</span><span><i class="swatch shared"></i>共享路径</span><span>紫色节点：工位 AP</span></div>
     </section>
     <aside class="side">
       <section class="panel controls wide">
@@ -167,6 +177,29 @@ function fmtMs(ms) { const seconds = Math.max(0, ms) / 1000; const h = Math.floo
 function label(value) { return String(value || '').replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()); }
 function safe(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function cubic(p0,p1,p2,p3,t) { const u=1-t; return [u*u*u*p0[0]+3*u*u*t*p1[0]+3*u*t*t*p2[0]+t*t*t*p3[0],u*u*u*p0[1]+3*u*u*t*p1[1]+3*u*t*t*p2[1]+t*t*t*p3[1]]; }
+function cubicDerivative(p0,p1,p2,p3,t) { const u=1-t; return [3*u*u*(p1[0]-p0[0])+6*u*t*(p2[0]-p1[0])+3*t*t*(p3[0]-p2[0]),3*u*u*(p1[1]-p0[1])+6*u*t*(p2[1]-p1[1])+3*t*t*(p3[1]-p2[1])]; }
+function edgeHeading(edge,t) { const d=cubicDerivative(edge.p0,edge.p1,edge.p2,edge.p3,t); let heading=Math.atan2(d[1],d[0]); if (Number(edge.motionDirection||0)===1) heading+=Math.PI; return heading; }
+function pathPoint(p) { return `${xCoord(p[0])},${yCoord(p[1])}`; }
+function partialPathD(edge,startT=0) { const steps=Math.max(3,Math.ceil((1-startT)*Math.max(4,Number(edge.length||0)*3))); const points=[]; for(let index=0;index<=steps;index++){const t=startT+(1-startT)*index/steps;points.push(cubic(edge.p0,edge.p1,edge.p2,edge.p3,t));} return points.map((p,index)=>`${index?'L':'M'} ${pathPoint(p)}`).join(' '); }
+
+function currentPlanFor(vehicleId,timeMs) {
+  const plans=plansByVehicle.get(vehicleId)||[];
+  const active=plans.filter(plan=>plan.createdAtMs<=timeMs && timeMs<=plan.committedUntilMs);
+  return active.length ? active[active.length-1] : null;
+}
+
+function remainingCommitment(plan,timeMs) {
+  if(!plan) return {path:'',end:null};
+  const parts=[]; let end=null;
+  for(const segment of plan.segments){
+    if(segment.endMs<timeMs || !segment.edgeId) continue;
+    const edge=edgeById.get(segment.edgeId); if(!edge) continue;
+    const startT=timeMs>segment.startMs && segment.endMs>segment.startMs ? Math.max(0,Math.min(1,(timeMs-segment.startMs)/(segment.endMs-segment.startMs))) : 0;
+    parts.push(partialPathD(edge,startT)); end=edge.p3;
+  }
+  if(!end){const finalSegment=plan.segments[plan.segments.length-1];const node=nodeById.get(finalSegment?.endNodeId);if(node)end=[node.x,node.y];}
+  return {path:parts.join(' '),end};
+}
 
 function renderMap() {
   svg.replaceChildren();
@@ -186,15 +219,16 @@ function renderMap() {
     const text = make('text', {x:xCoord(node.x)+.7, y:yCoord(node.y)-.7, class:'node-label'}); text.textContent = node.id.replace(/^.*:/,''); g.appendChild(text); nodes.appendChild(g);
   }
   svg.appendChild(nodes);
-  svg.appendChild(make('path', {id:'route-highlight', class:'route-highlight'}));
+  svg.appendChild(make('g', {id:'commitment-sweeps'}));
+  svg.appendChild(make('g', {id:'commitment-routes'}));
   svg.appendChild(make('g', {id:'vehicles-layer'}));
-  drawVehicles();
+  drawCommitments(); drawVehicles();
 }
 
 function positionFor(vehicleId, timeMs) {
   const plans = plansByVehicle.get(vehicleId) || [];
   const vehicle = vehicleById.get(vehicleId);
-  if (!plans.length) return {point: nodeById.get(vehicle?.initialNodeId), segment:null};
+  if (!plans.length) return {point: nodeById.get(vehicle?.initialNodeId), segment:null, heading:Number(vehicle?.initialHeadingRad||0)};
   const segments = plans.flatMap(plan => plan.segments).sort((a,b) => a.startMs - b.startMs);
   let previous = null;
   for (const segment of segments) {
@@ -203,15 +237,19 @@ function positionFor(vehicleId, timeMs) {
       const edge = segment.edgeId ? edgeById.get(segment.edgeId) : null;
       if (edge && segment.endMs > segment.startMs) {
         const p = cubic(edge.p0,edge.p1,edge.p2,edge.p3,Math.max(0,Math.min(1,(timeMs-segment.startMs)/(segment.endMs-segment.startMs))));
-        return {point:{x:p[0],y:p[1]},segment};
+        return {point:{x:p[0],y:p[1]},segment,heading:edgeHeading(edge,Math.max(0,Math.min(1,(timeMs-segment.startMs)/(segment.endMs-segment.startMs))))};
       }
-      return {point:nodeById.get(segment.startNodeId) || nodeById.get(segment.endNodeId),segment};
+      const prior=segments.filter(item=>item.edgeId && item.endMs<=timeMs).at(-1); const priorEdge=prior?.edgeId ? edgeById.get(prior.edgeId) : null;
+      return {point:nodeById.get(segment.startNodeId) || nodeById.get(segment.endNodeId),segment,heading:priorEdge?edgeHeading(priorEdge,1):Number(vehicle?.initialHeadingRad||0)};
     }
     previous = segment;
   }
   const nodeId = previous?.endNodeId || vehicle?.initialNodeId;
-  return {point:nodeById.get(nodeId),segment:previous};
+  const previousEdge=previous?.edgeId ? edgeById.get(previous.edgeId) : null;
+  return {point:nodeById.get(nodeId),segment:previous,heading:previousEdge?edgeHeading(previousEdge,1):Number(vehicle?.initialHeadingRad||0)};
 }
+
+function selectVehicle(vehicleId) { selectedVehicle=selectedVehicle===vehicleId?null:vehicleId; drawCommitments(); drawVehicles(); renderLists(); renderStats(); }
 
 function drawVehicles() {
   const layer = document.getElementById('vehicles-layer'); layer.replaceChildren();
@@ -220,20 +258,22 @@ function drawVehicles() {
     const located = positionFor(vehicle.vehicleId, currentMs); const p = located.point;
     if (!p) continue;
     if (located.segment?.edgeId) activeEdges.add(located.segment.edgeId);
-    const group = make('g', {class:`vehicle-group ${selectedVehicle === vehicle.vehicleId ? 'selected' : ''}`, 'data-vehicle':vehicle.vehicleId});
-    const marker = make('circle', {cx:xCoord(p.x),cy:yCoord(p.y),r:.9,class:`vehicle ${vehicle.robotGroup} ${selectedVehicle === vehicle.vehicleId ? 'selected' : ''}`});
-    marker.addEventListener('click', () => { selectedVehicle = selectedVehicle === vehicle.vehicleId ? null : vehicle.vehicleId; drawRoute(); drawVehicles(); renderLists(); });
-    group.appendChild(marker);
-    const text = make('text', {x:xCoord(p.x)+1.1,y:yCoord(p.y)-1.1,class:'vehicle-label'}); text.textContent = vehicle.vehicleId; group.appendChild(text); layer.appendChild(group);
+    const profile=DATA.vehicleProfiles?.[vehicle.robotGroup]||{length:1,width:.5}; const length=Number(profile.length); const width=Number(profile.width); const angle=-Number(located.heading||0)*180/Math.PI;
+    const group = make('g', {class:`vehicle-group ${selectedVehicle === vehicle.vehicleId ? 'selected' : ''}`, 'data-vehicle':vehicle.vehicleId,transform:`translate(${xCoord(p.x)} ${yCoord(p.y)}) rotate(${angle})`});
+    const body=make('rect',{x:-length/2,y:-width/2,width:length,height:width,rx:.12,class:`vehicle-body ${vehicle.robotGroup} ${selectedVehicle===vehicle.vehicleId?'selected':''}`});
+    body.addEventListener('click',()=>selectVehicle(vehicle.vehicleId)); group.appendChild(body);
+    group.appendChild(make('path',{d:`M ${length/2-.08} 0 L ${length/2-.42} ${-Math.min(width*.28,.18)} L ${length/2-.42} ${Math.min(width*.28,.18)} Z`,class:'vehicle-front'}));
+    const text = make('text', {x:length/2+.35,y:-width/2-.35,class:'vehicle-label',transform:`rotate(${-angle} ${length/2+.35} ${-width/2-.35})`}); text.textContent = vehicle.vehicleId; group.appendChild(text); layer.appendChild(group);
   }
   for (const road of svg.querySelectorAll('.road[data-edge]')) road.classList.toggle('active', activeEdges.has(road.dataset.edge));
 }
-function drawRoute() {
-  const route = document.getElementById('route-highlight');
-  if (!selectedVehicle) { route.setAttribute('d',''); return; }
-  const plans = plansByVehicle.get(selectedVehicle) || [];
-  const paths = plans.flatMap(plan => plan.segments).map(segment => segment.edgeId ? edgeById.get(segment.edgeId) : null).filter(Boolean);
-  route.setAttribute('d', paths.map(pathD).join(' '));
+function drawCommitments() {
+  const sweeps=document.getElementById('commitment-sweeps'); const routes=document.getElementById('commitment-routes'); if(!sweeps||!routes)return; sweeps.replaceChildren();routes.replaceChildren();
+  for(const vehicle of DATA.vehicles){const plan=currentPlanFor(vehicle.vehicleId,currentMs);const remaining=remainingCommitment(plan,currentMs);if(!plan||!remaining.path)continue;const profile=DATA.vehicleProfiles?.[vehicle.robotGroup]||{length:1,width:.5};const selected=selectedVehicle===vehicle.vehicleId;const diagonal=Math.hypot(Number(profile.length),Number(profile.width));
+    sweeps.appendChild(make('path',{d:remaining.path,class:`commitment-sweep ${selected?'selected':''}`,'stroke-width':diagonal}));
+    routes.appendChild(make('path',{d:remaining.path,class:`commitment-route ${vehicle.robotGroup} ${selected?'selected':''}`}));
+    if(remaining.end)routes.appendChild(make('circle',{cx:xCoord(remaining.end[0]),cy:yCoord(remaining.end[1]),r:selected ? .7 : .48,class:`commitment-end ${vehicle.robotGroup}`}));
+  }
 }
 
 function taskStatus(task) {
@@ -255,11 +295,11 @@ function vehicleStatus(vehicle) {
 function renderLists() {
   const vehicleEl = document.getElementById('vehicles'); vehicleEl.replaceChildren();
   for (const vehicle of DATA.vehicles) {
-    const [status, cls, segment] = vehicleStatus(vehicle); const row = document.createElement('button'); row.type='button'; row.className=`list-row ${selectedVehicle===vehicle.vehicleId?'selected':''}`; row.innerHTML=`<i class="dot ${safe(vehicle.robotGroup)}"></i><span class="row-main"><span class="row-title">${safe(vehicle.vehicleId)}</span><span class="row-detail">${safe(segment?.edgeId || segment?.startNodeId || vehicle.initialNodeId || '')}</span></span><span class="badge ${cls}">${status}</span>`; row.addEventListener('click',()=>{selectedVehicle=selectedVehicle===vehicle.vehicleId?null:vehicle.vehicleId;drawRoute();drawVehicles();renderLists();}); vehicleEl.appendChild(row);
+    const [status, cls, segment] = vehicleStatus(vehicle); const plan=currentPlanFor(vehicle.vehicleId,currentMs); const detail=plan ? `${segment?.edgeId||segment?.startNodeId||vehicle.initialNodeId||''} · 承诺至 ${fmtMs(plan.committedUntilMs)}` : (segment?.edgeId||segment?.startNodeId||vehicle.initialNodeId||''); const row = document.createElement('button'); row.type='button'; row.className=`list-row ${selectedVehicle===vehicle.vehicleId?'selected':''}`; row.innerHTML=`<i class="dot ${safe(vehicle.robotGroup)}"></i><span class="row-main"><span class="row-title">${safe(vehicle.vehicleId)}</span><span class="row-detail">${safe(detail)}</span></span><span class="badge ${cls}">${status}</span>`; row.addEventListener('click',()=>selectVehicle(vehicle.vehicleId)); vehicleEl.appendChild(row);
   }
   document.getElementById('vehicle-count').textContent = `${DATA.vehicles.length} 辆`;
   const taskEl = document.getElementById('tasks'); taskEl.replaceChildren();
-  for (const task of DATA.tasks) { const [status, cls] = taskStatus(task); const row = document.createElement('button'); row.type='button'; row.className='list-row'; row.innerHTML=`<i class="dot ${safe(task.requiredRobotGroup)}"></i><span class="row-main"><span class="row-title">${safe(task.taskId)}</span><span class="row-detail">${safe(task.pickupNodeId)} → ${safe(task.dropoffNodeId)}</span></span><span class="badge ${cls}">${status}</span>`; row.addEventListener('click',()=>{if(task.assignedVehicleId){selectedVehicle=task.assignedVehicleId;drawRoute();drawVehicles();renderLists();}}); taskEl.appendChild(row); }
+  for (const task of DATA.tasks) { const [status, cls] = taskStatus(task); const row = document.createElement('button'); row.type='button'; row.className='list-row'; row.innerHTML=`<i class="dot ${safe(task.requiredRobotGroup)}"></i><span class="row-main"><span class="row-title">${safe(task.taskId)}</span><span class="row-detail">${safe(task.pickupNodeId)} → ${safe(task.dropoffNodeId)}</span></span><span class="badge ${cls}">${status}</span>`; row.addEventListener('click',()=>{if(task.assignedVehicleId)selectVehicle(task.assignedVehicleId);}); taskEl.appendChild(row); }
   document.getElementById('task-count').textContent = `${DATA.tasks.length} 个`;
 }
 function renderStats() {
@@ -269,7 +309,8 @@ function renderStats() {
   const shared = DATA.vehicles.filter(vehicle => { const segment = vehicleStatus(vehicle)[2]; return Boolean(segment?.edgeId && edgeById.get(segment.edgeId)?.shared); }).length;
   const metrics = DATA.metrics || {};
   document.getElementById('stats').innerHTML = `<div class="stat"><div class="stat-value">${completed}/${DATA.tasks.length}</div><div class="stat-label">当前完成任务</div></div><div class="stat"><div class="stat-value">${moving}</div><div class="stat-label">行驶车辆</div></div><div class="stat"><div class="stat-value">${waiting}</div><div class="stat-label">等待车辆</div></div><div class="stat"><div class="stat-value">${shared}</div><div class="stat-label">共享区车辆</div></div><div class="stat"><div class="stat-value">${Number(metrics.completedDropoffsPerHour||0).toFixed(1)}</div><div class="stat-label">仿真总吞吐 / 小时</div></div><div class="stat"><div class="stat-value">${Number(metrics.reservationConflictRejections||0)}</div><div class="stat-label">资源冲突拒绝</div></div>`;
-  document.getElementById('map-status').textContent = `${moving} 行驶 · ${waiting} 等待 · ${shared} 共享区 · ${selectedVehicle ? `已选 ${selectedVehicle}` : '点击车辆查看路线'}`;
+  const committed=DATA.vehicles.filter(vehicle=>currentPlanFor(vehicle.vehicleId,currentMs)).length;
+  document.getElementById('map-status').textContent = `${moving} 行驶 · ${waiting} 等待 · ${committed} 条有效承诺 · ${selectedVehicle ? `已选 ${selectedVehicle}` : '点击车辆突出路线'}`;
 }
 function metricContext(current, baseline, unit = '') {
   const now = Number(current); const before = Number(baseline);
@@ -306,7 +347,7 @@ function renderTimeline() {
   document.getElementById('event-count').textContent = `${visible.length}/${DATA.events.length}`;
 }
 function render() {
-  document.getElementById('time').value = String(currentMs); document.getElementById('time-readout').textContent = fmtMs(currentMs); document.getElementById('play-state').textContent = playing ? '播放中' : '暂停'; document.getElementById('play-state').className=`badge ${playing?'active':''}`; renderStats(); drawVehicles(); renderLists(); renderTimeline();
+  document.getElementById('time').value = String(currentMs); document.getElementById('time-readout').textContent = fmtMs(currentMs); document.getElementById('play-state').textContent = playing ? '播放中' : '暂停'; document.getElementById('play-state').className=`badge ${playing?'active':''}`; drawCommitments(); drawVehicles(); renderStats(); renderLists(); renderTimeline();
 }
 function setTime(value) { currentMs = Math.max(0, Math.min(DATA.endTimeMs, Number(value))); render(); }
 function tick(now) { if (!playing) return; if (!lastTick) lastTick=now; const speed=Number(document.getElementById('speed').value); setTime(currentMs + (now-lastTick)*speed); lastTick=now; if (currentMs >= DATA.endTimeMs) { playing=false; lastTick=0; render(); return; } timer=requestAnimationFrame(tick); }
@@ -334,7 +375,7 @@ document.getElementById('focus-shared').addEventListener('click',()=>{
 document.getElementById('subtitle').textContent=`${DATA.scenarioId} · ${DATA.vehicles.length} 辆车 · ${DATA.tasks.length} 个任务`;
 const replayModeLabel=DATA.replayMode==='online'?'在线调度事件回放':'本地离线回放';
 document.getElementById('meta').textContent=`仿真时长 ${fmtMs(DATA.endTimeMs)} · seed ${DATA.seed ?? '-'} · ${replayModeLabel}`;
-renderMap(); drawRoute(); renderPlanningStats(); render();
+renderMap(); renderPlanningStats(); render();
 </script>
 </body>
 </html>

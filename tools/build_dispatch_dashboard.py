@@ -16,6 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TEMPLATE = ROOT / "visualization" / "dispatch-dashboard.template.html"
 DEFAULT_MAP = ROOT / "generated" / "xiate-unified-scene-model.json"
+DEFAULT_PROFILES = ROOT / "config" / "robot-profiles.json"
 PLACEHOLDER = "__MASP_DASHBOARD_JSON__"
 PLANNING_METRIC_KEYS = (
     "policy",
@@ -70,6 +71,8 @@ def compact_map(model: dict[str, Any]) -> dict[str, Any]:
             "p1": edge["p1"],
             "p2": edge["p2"],
             "p3": edge["p3"],
+            "length": float(edge.get("length", 0.0)),
+            "motionDirection": int(edge.get("motionDirection", 0)),
             "shared": bool(edge.get("sharedMatch")),
         }
         for edge in model.get("edges", [])
@@ -83,6 +86,16 @@ def compact_map(model: dict[str, Any]) -> dict[str, Any]:
             {"p0": item["p0"], "p1": item["p1"], "p2": item["p2"], "p3": item["p3"]}
             for item in model.get("sharedOverlays", [])
         ],
+    }
+
+
+def compact_vehicle_profiles(profiles: dict[str, Any]) -> dict[str, Any]:
+    return {
+        group: {
+            "length": float(profile["dimensions"]["length"]),
+            "width": float(profile["dimensions"]["width"]),
+        }
+        for group, profile in profiles.get("robotGroups", {}).items()
     }
 
 
@@ -125,6 +138,7 @@ def build_bundle(
     *,
     scenario_path: Path | None = None,
     baseline_run_dir: Path | None = None,
+    profiles_path: Path = DEFAULT_PROFILES,
 ) -> dict[str, Any]:
     result = load_json(run_dir / "result.json")
     planned = load_json(run_dir / "planned-scenario.json", required=False)
@@ -171,6 +185,7 @@ def build_bundle(
                 "vehicleId": vehicle_id,
                 "robotGroup": merged.get("robotGroup", "unknown"),
                 "initialNodeId": merged.get("initialNodeId", merged.get("currentNodeId")),
+                "initialHeadingRad": float(merged.get("initialHeadingRad", 0.0)),
                 "state": merged.get("state", "UNKNOWN"),
                 "loadState": merged.get("loadState", "empty"),
                 "activeTaskId": merged.get("activeTaskId"),
@@ -190,6 +205,7 @@ def build_bundle(
             else "offline"
         ),
         "map": compact_map(load_json(map_path)),
+        "vehicleProfiles": compact_vehicle_profiles(load_json(profiles_path)),
         "vehicles": vehicles,
         "tasks": tasks,
         "plans": plans,
@@ -206,6 +222,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build a standalone MASP dispatch dashboard")
     parser.add_argument("run_dir", type=Path, help="Run directory containing result.json")
     parser.add_argument("--map", dest="map_path", type=Path, default=DEFAULT_MAP)
+    parser.add_argument(
+        "--profiles", type=Path, default=DEFAULT_PROFILES, help="Robot profiles with vehicle dimensions"
+    )
     parser.add_argument("--scenario", type=Path, default=None, help="Optional source scenario JSON")
     parser.add_argument(
         "--baseline-run",
@@ -226,6 +245,7 @@ def main() -> None:
         args.map_path,
         scenario_path=args.scenario,
         baseline_run_dir=args.baseline_run,
+        profiles_path=args.profiles,
     )
     payload = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
     output.parent.mkdir(parents=True, exist_ok=True)
