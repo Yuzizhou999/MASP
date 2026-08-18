@@ -291,14 +291,21 @@ def _run_zone_admission(
         terminal_hold_end_ms=end_time_ms,
     )
     table.insert_batch(planned_rows)
+    zone_motion_segments = [
+        item
+        for item in segments
+        if item.kind in {SegmentKind.ROTATE, SegmentKind.TRAVERSE}
+        and zone.resource_id in topology.required_resources(item)
+    ]
     zone_intervals = [
-        (item.start_ms, item.end_ms)
-        for item in traversals
-        if zone.resource_id in topology.required_resources(item)
+        (item.start_ms, item.end_ms) for item in zone_motion_segments
     ]
     continuous = (
-        len(zone_intervals) == len(traversals)
-        and bool(zone_intervals)
+        bool(zone_intervals)
+        and all(
+            zone.resource_id in topology.required_resources(item)
+            for item in traversals
+        )
         and zone_intervals[0][0] == traversals[0].start_ms
         and zone_intervals[-1][1] == traversals[-1].end_ms
         and all(
@@ -541,7 +548,11 @@ def _segment_reservations(
 ) -> tuple[Reservation, ...]:
     rows: list[Reservation] = []
     for segment in segments:
-        kind = "wait" if segment.kind is SegmentKind.WAIT else "transit"
+        kind = {
+            SegmentKind.ROTATE: "rotation",
+            SegmentKind.TRAVERSE: "transit",
+            SegmentKind.WAIT: "wait",
+        }[segment.kind]
         for resource_id in topology.required_resources(segment):
             rows.append(
                 Reservation(

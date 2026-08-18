@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Iterable
 
 from .domain import DomainError, LoadState
+
+
+ROTATION_EPSILON_DEGREES = 0.001
 
 
 def _profile_time(distance: float, maximum: float, acceleration: float, deceleration: float) -> float:
@@ -25,6 +29,10 @@ def _profile_time(distance: float, maximum: float, acceleration: float, decelera
 def _angle_difference_degrees(left_rad: float, right_rad: float) -> float:
     difference = (right_rad - left_rad + math.pi) % (2.0 * math.pi) - math.pi
     return abs(math.degrees(difference))
+
+
+def _headings_equal(left_rad: float, right_rad: float) -> bool:
+    return _angle_difference_degrees(left_rad, right_rad) < ROTATION_EPSILON_DEGREES
 
 # 算出"进入这条边时车头该朝哪"和"离开这条边时车头朝哪"（用贝塞尔曲线的切线方向）
 def _edge_tangent(edge: dict[str, Any], at_end: bool) -> float:
@@ -68,6 +76,42 @@ def _maximum_curvature(edge: dict[str, Any], samples: int = 16) -> float:
             maximum = max(maximum, abs(dx * ddy - dy * ddx) / denominator)
     return maximum
 
+
+@dataclass(frozen=True)
+class EdgeMotionPhases:
+    start_rotation_ms: int
+    linear_ms: int
+    end_rotation_ms: int
+    start_heading_rad: float
+    travel_start_heading_rad: float
+    travel_end_heading_rad: float
+    end_heading_rad: float
+
+    @property
+    def duration_ms(self) -> int:
+        return self.start_rotation_ms + self.linear_ms + self.end_rotation_ms
+
+
+def _allocate_phase_durations(
+    raw_ms: tuple[float, float, float], total_ms: int
+) -> tuple[int, int, int]:
+    """Scale raw phase durations to the quantized edge duration without drift."""
+
+    raw_total = sum(raw_ms)
+    if raw_total <= 0.0:
+        return 0, total_ms, 0
+    scaled = [value * total_ms / raw_total for value in raw_ms]
+    result = [math.floor(value) for value in scaled]
+    remainder = total_ms - sum(result)
+    order = sorted(
+        range(len(scaled)),
+        key=lambda index: scaled[index] - result[index],
+        reverse=True,
+    )
+    for index in order[:remainder]:
+        result[index] += 1
+    return result[0], result[1], result[2]
+
 # 算一条边总耗时
 class EdgeTravelTimeModel:
     def __init__(
@@ -82,6 +126,10 @@ class EdgeTravelTimeModel:
         self.profiles = profiles["robotGroups"]
         self.time_quantum_ms = time_quantum_ms
         self._duration_cache: dict[tuple[Any, ...], int] = {}
+        self._phase_cache: dict[tuple[Any, ...], EdgeMotionPhases] = {}
+        self._rotation_duration_cache: dict[
+            tuple[str, LoadState, float, float], int
+        ] = {}
 
     @staticmethod
     def _duration_key(
@@ -103,6 +151,99 @@ class EdgeTravelTimeModel:
     def duration_ms(self, edge: dict[str, Any], load_state: LoadState) -> int:
         cache_key = self._duration_key(edge, load_state)
         cached = self._duration_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        phases = self.motion_phases(edge, load_state)
+        return phases.duration_ms
+
+    def rotation_duration_ms(
+        self,
+        robot_group: str,
+        load_state: LoadState,
+        start_heading_rad: float,
+        end_heading_rad: float,
+    ) -> int:
+        cache_key = (
+            robot_group,
+            load_state,
+            round(float(start_heading_rad), 9),
+            round(float(end_heading_rad), 9),
+        )
+        cached = self._rotation_duration_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        angle_degrees = _angle_difference_degrees(
+            start_heading_rad, end_heading_rad
+        )
+        if angle_degrees < ROTATION_EPSILON_DEGREES:
+            self._rotation_duration_cache[cache_key] = 0
+            return 0
+        state_profile = self.profiles[robot_group][
+            "loaded" if load_state is LoadState.LOADED else "unloaded"
+        ]
+        seconds = _profile_time(
+            angle_degrees,
+            float(state_profile["maxRotationSpeed"]),
+            float(state_profile["maxRotationAcceleration"]),
+            float(state_profile["maxRotationDeceleration"]),
+        )
+        raw_ms = max(1, math.ceil(seconds * 1000.0))
+        duration_ms = (
+            math.ceil(raw_ms / self.time_quantum_ms) * self.time_quantum_ms
+        )
+        self._rotation_duration_cache[cache_key] = duration_ms
+        return duration_ms
+
+    def route_duration_ms(
+        self,
+        edges: Iterable[dict[str, Any]],
+        load_state: LoadState,
+        *,
+        entry_heading_rad: float | None = None,
+        terminal: bool = True,
+    ) -> int:
+        """Return the free-flow duration using continuous route headings.
+
+        A route rotates into its first edge once, uses direct rotations between
+        adjacent edges, and only rotates to the node heading when it is a
+        terminal route. This is the same motion accounting used by SIPP.
+        """
+
+        items = tuple(edges)
+        if not items:
+            return 0
+        phases = tuple(self.motion_phases(edge, load_state) for edge in items)
+        entry_heading = (
+            phases[0].start_heading_rad
+            if entry_heading_rad is None
+            else float(entry_heading_rad)
+        )
+        if _headings_equal(entry_heading, phases[0].start_heading_rad):
+            total = phases[0].start_rotation_ms
+        else:
+            total = self.rotation_duration_ms(
+                items[0]["robotGroup"],
+                load_state,
+                entry_heading,
+                phases[0].travel_start_heading_rad,
+            )
+        total += sum(phase.linear_ms for phase in phases)
+        for previous, following, edge in zip(
+            phases, phases[1:], items[1:]
+        ):
+            total += self.rotation_duration_ms(
+                edge["robotGroup"],
+                load_state,
+                previous.travel_end_heading_rad,
+                following.travel_start_heading_rad,
+            )
+        if terminal:
+            total += phases[-1].end_rotation_ms
+        return total
+
+    def motion_phases(self, edge: dict[str, Any], load_state: LoadState) -> EdgeMotionPhases:
+        cache_key = self._duration_key(edge, load_state)
+        cached = self._phase_cache.get(cache_key)
         if cached is not None:
             return cached
         group = edge["robotGroup"]
@@ -147,22 +288,45 @@ class EdgeTravelTimeModel:
         )
         start_rotation = _angle_difference_degrees(start_heading, _edge_tangent(edge, False))
         end_rotation = _angle_difference_degrees(_edge_tangent(edge, True), end_heading)
-        angular_seconds = _profile_time(
+        if start_rotation < ROTATION_EPSILON_DEGREES:
+            start_rotation = 0.0
+        if end_rotation < ROTATION_EPSILON_DEGREES:
+            end_rotation = 0.0
+        start_rotation_seconds = _profile_time(
             start_rotation,
             float(state_profile["maxRotationSpeed"]),
             float(state_profile["maxRotationAcceleration"]),
             float(state_profile["maxRotationDeceleration"]),
-        ) + _profile_time(
+        )
+        end_rotation_seconds = _profile_time(
             end_rotation,
             float(state_profile["maxRotationSpeed"]),
             float(state_profile["maxRotationAcceleration"]),
             float(state_profile["maxRotationDeceleration"]),
         )
         # 总耗时 = 沿路走 + 两端转头，这里向上取整到 100ms 的倍数
-        raw_ms = math.ceil((linear_seconds + angular_seconds) * 1000.0)
+        raw_phase_ms = (
+            start_rotation_seconds * 1000.0,
+            linear_seconds * 1000.0,
+            end_rotation_seconds * 1000.0,
+        )
+        raw_ms = math.ceil(sum(raw_phase_ms))
         duration_ms = max(
             self.time_quantum_ms,
             math.ceil(raw_ms / self.time_quantum_ms) * self.time_quantum_ms,
         )
+        start_rotation_ms, linear_ms, end_rotation_ms = _allocate_phase_durations(
+            raw_phase_ms, duration_ms
+        )
+        phases = EdgeMotionPhases(
+            start_rotation_ms=start_rotation_ms,
+            linear_ms=linear_ms,
+            end_rotation_ms=end_rotation_ms,
+            start_heading_rad=start_heading,
+            travel_start_heading_rad=_edge_tangent(edge, False),
+            travel_end_heading_rad=_edge_tangent(edge, True),
+            end_heading_rad=end_heading,
+        )
+        self._phase_cache[cache_key] = phases
         self._duration_cache[cache_key] = duration_ms
-        return duration_ms
+        return phases

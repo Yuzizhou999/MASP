@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +31,47 @@ class MapTopology:
         self.edges = {item["id"]: item for item in model["edges"]}
         self.edge_resources = {
             item["edgeId"]: item for item in conflicts["edgeResources"]
+        }
+        self.rotation_resources = {
+            item["rotationId"]: item
+            for item in conflicts.get("rotationResources", [])
+        }
+        self.rotation_ids_by_edge_phase = {
+            (reference["edgeId"], reference["phase"]): item["rotationId"]
+            for item in self.rotation_resources.values()
+            for reference in item.get("edgePhases", [])
+        }
+        self.rotation_ids_by_headings = {
+            self._rotation_heading_key(
+                item["nodeId"],
+                item["robotGroup"],
+                float(item["startHeadingRad"]),
+                float(item["endHeadingRad"]),
+            ): item["rotationId"]
+            for item in self.rotation_resources.values()
+            if not item.get("arbitraryHeadingFallback", False)
+        }
+        self.rotation_fallback_ids = {
+            (item["nodeId"], item["robotGroup"]): item["rotationId"]
+            for item in self.rotation_resources.values()
+            if item.get("arbitraryHeadingFallback", False)
+        }
+        rotation_ids_by_motion_edge: dict[str, set[str]] = defaultdict(set)
+        for item in self.rotation_resources.values():
+            for reference in item.get("edgePhases", []):
+                rotation_ids_by_motion_edge[reference["edgeId"]].add(
+                    item["rotationId"]
+                )
+            for reference in item.get("edgeTransitions", []):
+                rotation_ids_by_motion_edge[reference["incomingEdgeId"]].add(
+                    item["rotationId"]
+                )
+                rotation_ids_by_motion_edge[reference["outgoingEdgeId"]].add(
+                    item["rotationId"]
+                )
+        self.rotation_ids_by_motion_edge = {
+            edge_id: tuple(sorted(rotation_ids))
+            for edge_id, rotation_ids in rotation_ids_by_motion_edge.items()
         }
         self.workstations = {
             item["nodeId"]: Workstation(
@@ -94,7 +137,23 @@ class MapTopology:
     def derived_resources(self, segment: PlanSegment) -> tuple[str, ...]:
         resources: set[str] = set()
         # 走一条路，要把这条路和所有会撞的路、以及两头路口都锁住
-        if segment.kind is SegmentKind.TRAVERSE:
+        if segment.kind is SegmentKind.ROTATE:
+            rotation_id = str(segment.command_payload.get("rotationId", ""))
+            rotation_resource = self.rotation_resources.get(rotation_id)
+            if rotation_resource is None:
+                raise DomainError(
+                    "plan.rotation.resources_missing",
+                    f"rotation {rotation_id!r} has no conflict resource record",
+                )
+            resources.add(rotation_resource["ownResource"])
+            resources.update(rotation_resource["conflictResources"])
+            if segment.start_node_id:
+                resources.add(f"node:{segment.start_node_id}")
+                resources.update(
+                    self.traffic_zones.resource_ids_for_node(segment.start_node_id)
+                )
+        # 走一条路，要把这条路和所有会撞的路、以及两头路口都锁住
+        elif segment.kind is SegmentKind.TRAVERSE:
             if segment.edge_id not in self.edge_resources:
                 raise DomainError(
                     "plan.edge.resources_missing",
@@ -136,6 +195,60 @@ class MapTopology:
 
     def required_resources(self, segment: PlanSegment) -> tuple[str, ...]:
         return tuple(sorted(set(self.derived_resources(segment)) | set(segment.resource_ids)))
+
+    def rotation_id_for_edge(self, edge_id: str, phase: str) -> str | None:
+        return self.rotation_ids_by_edge_phase.get((edge_id, phase))
+
+    @staticmethod
+    def _normalized_heading(heading_rad: float) -> float:
+        result = (float(heading_rad) + math.pi) % (2.0 * math.pi) - math.pi
+        return 0.0 if abs(result) < 1e-9 else result
+
+    @classmethod
+    def _rotation_heading_key(
+        cls,
+        node_id: str,
+        robot_group: str,
+        start_heading_rad: float,
+        end_heading_rad: float,
+    ) -> tuple[str, str, float, float]:
+        return (
+            node_id,
+            robot_group,
+            round(cls._normalized_heading(start_heading_rad), 6),
+            round(cls._normalized_heading(end_heading_rad), 6),
+        )
+
+    def rotation_id_for_headings(
+        self,
+        node_id: str,
+        robot_group: str,
+        start_heading_rad: float,
+        end_heading_rad: float,
+    ) -> str | None:
+        return self.rotation_ids_by_headings.get(
+            self._rotation_heading_key(
+                node_id,
+                robot_group,
+                start_heading_rad,
+                end_heading_rad,
+            )
+        )
+
+    def fallback_rotation_id(self, node_id: str, robot_group: str) -> str | None:
+        return self.rotation_fallback_ids.get((node_id, robot_group))
+
+    def prospective_motion_resources_for_edge(self, edge_id: str) -> tuple[str, ...]:
+        edge_resource = self.edge_resources[edge_id]
+        resources = {
+            edge_resource["ownResource"],
+            *edge_resource["conflictResources"],
+        }
+        for rotation_id in self.rotation_ids_by_motion_edge.get(edge_id, ()):
+            rotation = self.rotation_resources[rotation_id]
+            resources.add(rotation["ownResource"])
+            resources.update(rotation["conflictResources"])
+        return tuple(sorted(resources))
 
     def wait_allowed(self, node_id: str, robot_group: str) -> bool:
         if self.traffic_zones.zone_for_node(node_id) is not None:

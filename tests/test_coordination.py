@@ -8,10 +8,12 @@ from jsonschema import Draft202012Validator
 
 from masp.domain import (
     LoadState,
+    PlanSegment,
     SegmentKind,
     TaskState,
     TransportTask,
     Vehicle,
+    VehiclePlan,
     VehicleState,
 )
 from masp.motion import EdgeTravelTimeModel
@@ -58,6 +60,58 @@ def test_candidate_score_uses_lexicographic_throughput_priority() -> None:
     less_dropoffs = CandidateScore(1, 3, 0, 0, 0, 0, 1)
 
     assert more_dropoffs.ordering_key() < less_dropoffs.ordering_key()
+
+
+def test_rh_pp_commitment_only_ends_after_a_stable_motion_boundary() -> None:
+    plan = VehiclePlan(
+        plan_id="rotation-boundary-plan",
+        revision=1,
+        vehicle_id="fork-001",
+        task_id="task-001",
+        based_on_vehicle_revision=0,
+        based_on_world_revision=0,
+        created_at_ms=0,
+        horizon_end_ms=3000,
+        committed_until_ms=3000,
+        segments=(
+            PlanSegment(
+                segment_id="rotate-start",
+                kind=SegmentKind.ROTATE,
+                start_ms=0,
+                end_ms=1000,
+                start_node_id="fork:A",
+                end_node_id="fork:A",
+                edge_id=None,
+                expected_load_state=LoadState.EMPTY,
+                command_payload={"phase": "start"},
+            ),
+            PlanSegment(
+                segment_id="traverse",
+                kind=SegmentKind.TRAVERSE,
+                start_ms=1000,
+                end_ms=2000,
+                start_node_id="fork:A",
+                end_node_id="fork:B",
+                edge_id="fork:edge",
+                expected_load_state=LoadState.EMPTY,
+            ),
+            PlanSegment(
+                segment_id="rotate-end",
+                kind=SegmentKind.ROTATE,
+                start_ms=2000,
+                end_ms=3000,
+                start_node_id="fork:B",
+                end_node_id="fork:B",
+                edge_id=None,
+                expected_load_state=LoadState.EMPTY,
+                command_payload={"phase": "end"},
+            ),
+        ),
+    )
+
+    assert not RollingHorizonPlanner._segment_has_stable_end(plan, 0)
+    assert not RollingHorizonPlanner._segment_has_stable_end(plan, 1)
+    assert RollingHorizonPlanner._segment_has_stable_end(plan, 2)
 
 
 def test_random_priority_orders_are_reproducible(dispatch_documents) -> None:

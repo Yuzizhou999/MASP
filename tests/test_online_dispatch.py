@@ -364,5 +364,6 @@ def test_online_runtime_accepts_local_rl_policy_with_safe_validation(
 
     assert result["metrics"]["completedTaskCount"] == len(scenario["tasks"])
     assert result["metrics"]["reservationConflictRejections"] == 0
+    assert {vehicle["state"] for vehicle in result["vehicles"]} == {"IDLE"}
     assert planning["rlInferenceCount"] > 0
     assert planning["rlFallbackCount"] == 0

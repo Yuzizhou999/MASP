@@ -8,6 +8,7 @@ from .assignment import AssignmentProposal, TaskAllocator
 from .domain import (
     DomainError,
     LoadState,
+    SegmentKind,
     TaskState,
     TransportTask,
     Vehicle,
@@ -277,7 +278,15 @@ class TaskPlanner:
         vehicle.state = VehicleState.IDLE
         vehicle.revision = projected_vehicle_revision(plan)
         vehicle.available_at_ms = plan.segments[-1].end_ms
-        vehicle.heading_rad = 0.0
+        for segment in reversed(plan.segments):
+            if segment.kind in {SegmentKind.ROTATE, SegmentKind.TRAVERSE}:
+                try:
+                    vehicle.heading_rad = float(
+                        segment.command_payload["endHeadingRad"]
+                    )
+                except (KeyError, TypeError, ValueError):
+                    pass
+                break
 
     def _replace_tail(
         self,

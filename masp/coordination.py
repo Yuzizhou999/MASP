@@ -969,9 +969,9 @@ class RollingHorizonPlanner(TaskPlanner):
             for route in route_group:
                 for edge_id in route.edge_ids:
                     edge = self.topology.edges[edge_id]
-                    edge_resources = self.topology.edge_resources[edge_id]
-                    resources.add(edge_resources["ownResource"])
-                    resources.update(edge_resources["conflictResources"])
+                    resources.update(
+                        self.topology.prospective_motion_resources_for_edge(edge_id)
+                    )
                     resources.add(f"node:{edge['start']}")
                     resources.add(f"node:{edge['end']}")
                     resources.update(
@@ -1426,9 +1426,9 @@ class RollingHorizonPlanner(TaskPlanner):
         }
         resource_ids: set[str] = set()
         for edge_id in edge_ids:
-            edge_resource = self.topology.edge_resources[edge_id]
-            resource_ids.add(edge_resource["ownResource"])
-            resource_ids.update(edge_resource["conflictResources"])
+            resource_ids.update(
+                self.topology.prospective_motion_resources_for_edge(edge_id)
+            )
         window_start = now_ms
         window_end = window_start + self.planning_horizon_ms
         return sum(
@@ -1607,7 +1607,7 @@ class RollingHorizonPlanner(TaskPlanner):
                 elif segment.kind is SegmentKind.WAIT:
                     wait_ms += duration
                 elif (
-                    segment.kind is SegmentKind.TRAVERSE
+                    segment.kind in {SegmentKind.ROTATE, SegmentKind.TRAVERSE}
                     and segment.expected_load_state.value == "empty"
                 ):
                     empty_travel_ms += duration
@@ -1627,7 +1627,7 @@ class RollingHorizonPlanner(TaskPlanner):
             plan.created_at_ms + self.execution_horizon_ms,
         )
         safe_until = plan.segments[-1].end_ms
-        for segment in plan.segments:
+        for index, segment in enumerate(plan.segments):
             if segment.end_ms < nominal or segment.end_node_id is None:
                 continue
             if (
@@ -1641,7 +1641,7 @@ class RollingHorizonPlanner(TaskPlanner):
                 break
             if self.topology.wait_allowed(
                 segment.end_node_id, projected_vehicle.robot_group
-            ):
+            ) and self._segment_has_stable_end(plan, index):
                 safe_until = segment.end_ms
                 break
         return SafeCommitment(
@@ -1649,6 +1649,22 @@ class RollingHorizonPlanner(TaskPlanner):
             task_id=plan.task_id,
             nominal_until_ms=nominal,
             safe_until_ms=safe_until,
+        )
+
+    @staticmethod
+    def _segment_has_stable_end(plan: VehiclePlan, index: int) -> bool:
+        segment = plan.segments[index]
+        if segment.kind is SegmentKind.ROTATE:
+            return segment.command_payload.get("phase") == "end"
+        if segment.kind is not SegmentKind.TRAVERSE:
+            return True
+        if index + 1 >= len(plan.segments):
+            return True
+        following = plan.segments[index + 1]
+        return not (
+            following.kind is SegmentKind.ROTATE
+            and following.command_payload.get("phase") == "end"
+            and following.start_ms == segment.end_ms
         )
 
     @staticmethod

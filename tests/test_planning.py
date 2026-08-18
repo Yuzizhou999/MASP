@@ -19,7 +19,7 @@ from masp.domain import (
 from masp.motion import EdgeTravelTimeModel
 from masp.plans import PlanValidator
 from masp.reservations import Reservation, ReservationTable
-from masp.routing import RouteProvider
+from masp.routing import RouteProvider, SpatialRoute
 from masp.scenario import build_plans, build_simulator
 from masp.sipp import ContinuousTimeSippPlanner, SippPlanningError
 from masp.topology import MapTopology
@@ -71,6 +71,276 @@ def test_motion_time_is_positive_rounded_and_load_sensitive() -> None:
     }
     travel.duration_ms(reverse_probe, LoadState.EMPTY)
     assert len(travel._duration_cache) == cache_size + 1
+
+
+def test_equivalent_wrapped_headings_do_not_create_rotation_phases() -> None:
+    model, _, _, profiles, scheduler, _ = planning_documents()
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    edge = next(item for item in model["edges"] if item["id"] == "fork:edge-0")
+
+    phases = travel.motion_phases(edge, LoadState.EMPTY)
+
+    assert phases.start_rotation_ms == 0
+    assert phases.end_rotation_ms == 0
+
+
+def test_straight_reverse_edge_exposes_stop_rotate_move_phases() -> None:
+    motion_limits = {
+        "maxForwardSpeed": 2.0,
+        "maxReverseSpeed": 1.0,
+        "maxAcceleration": 1.0,
+        "maxDeceleration": 1.0,
+        "maxRotationSpeed": 90.0,
+        "maxRotationAcceleration": 120.0,
+        "maxRotationDeceleration": 90.0,
+    }
+    model = {
+        "nodes": [
+            {"id": "fork:A", "headings": {"fork": 0.0}},
+            {"id": "fork:B", "headings": {"fork": 0.0}},
+        ]
+    }
+    edge = {
+        "id": "fork:reverse",
+        "robotGroup": "fork",
+        "start": "fork:A",
+        "end": "fork:B",
+        "p0": [0.0, 0.0],
+        "p1": [1.0, 0.0],
+        "p2": [2.0, 0.0],
+        "p3": [3.0, 0.0],
+        "length": 3.0,
+        "motionDirection": 1,
+    }
+    travel = EdgeTravelTimeModel(
+        model,
+        {
+            "robotGroups": {
+                "fork": {"unloaded": motion_limits, "loaded": motion_limits}
+            }
+        },
+        100,
+    )
+
+    phases = travel.motion_phases(edge, LoadState.EMPTY)
+
+    assert phases.start_rotation_ms > 0
+    assert phases.linear_ms > 0
+    assert phases.end_rotation_ms > 0
+    assert phases.duration_ms == travel.duration_ms(edge, LoadState.EMPTY)
+    assert phases.start_heading_rad == 0.0
+    assert phases.travel_start_heading_rad == pytest.approx(3.141592653589793)
+    assert phases.travel_end_heading_rad == pytest.approx(3.141592653589793)
+    assert phases.end_heading_rad == 0.0
+
+
+def test_sipp_reserves_rotation_and_delays_the_complete_edge_motion() -> None:
+    model, conflicts, workstations, profiles, scheduler, traffic_zones = (
+        planning_documents()
+    )
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        RouteProvider(model, travel),
+        travel,
+        scheduler,
+        (item["nodeId"] for item in traffic_zones["recoveryNodes"]),
+    )
+    edge = topology.edges["jack:edge-326"]
+    vehicle = Vehicle.from_dict(
+        {
+            "vehicleId": "jack-rotation-probe",
+            "robotGroup": "jack",
+            "initialNodeId": edge["start"],
+            "initialHeadingRad": -3.141593,
+            "initialLoadState": "empty",
+        }
+    )
+    actions = planner._edge_motion_actions(
+        edge, LoadState.EMPTY, start_offset_ms=0
+    )
+    rotation_id = actions[0].command_payload["rotationId"]
+    rotation_resource = topology.rotation_resources[rotation_id]["ownResource"]
+    reservations = ReservationTable()
+    reservations.insert_batch(
+        (
+            Reservation(
+                reservation_id="blocking-rotation",
+                resource_id=rotation_resource,
+                vehicle_id="other-jack",
+                plan_id="other-plan",
+                segment_id="other-rotation",
+                start_ms=0,
+                end_ms=5000,
+                kind="rotation",
+                committed=True,
+            ),
+        )
+    )
+    segments: list[PlanSegment] = []
+
+    completion_ms = planner._schedule_single_edge(
+        segments,
+        vehicle,
+        edge["id"],
+        edge["start"],
+        0,
+        LoadState.EMPTY,
+        reservations,
+        30_000,
+    )
+
+    assert [segment.kind for segment in segments] == [
+        SegmentKind.WAIT,
+        SegmentKind.ROTATE,
+        SegmentKind.TRAVERSE,
+        SegmentKind.ROTATE,
+    ]
+    assert segments[1].start_ms == 5000
+    assert rotation_resource in segments[1].resource_ids
+    assert completion_ms == 5000 + travel.duration_ms(edge, LoadState.EMPTY)
+
+
+def test_route_keeps_heading_across_aligned_consecutive_edges() -> None:
+    model, conflicts, workstations, profiles, scheduler, traffic_zones = (
+        planning_documents()
+    )
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        RouteProvider(model, travel),
+        travel,
+        scheduler,
+        (item["nodeId"] for item in traffic_zones["recoveryNodes"]),
+    )
+    start_node_id = "shared:LM1191"
+    vehicle = Vehicle.from_dict(
+        {
+            "vehicleId": "fork-heading-probe",
+            "robotGroup": "fork",
+            "initialNodeId": start_node_id,
+            "initialHeadingRad": topology.nodes[start_node_id]["headings"]["fork"],
+            "initialLoadState": "empty",
+        }
+    )
+    matching = SpatialRoute(
+        start_node_id,
+        "shared:LM188",
+        ("fork:edge-277", "fork:edge-279"),
+        0,
+    )
+
+    segments = planner.schedule_route_intent(
+        vehicle,
+        matching,
+        0,
+        LoadState.EMPTY,
+        ReservationTable(),
+        60_000,
+    )
+
+    assert [segment.edge_id for segment in segments if segment.edge_id] == [
+        "fork:edge-277",
+        "fork:edge-279",
+    ]
+    assert not any(
+        segment.kind is SegmentKind.ROTATE
+        and segment.start_node_id == "shared:LM213"
+        for segment in segments
+    )
+
+
+def test_consecutive_edges_use_one_direct_transition_rotation() -> None:
+    model, conflicts, workstations, profiles, scheduler, traffic_zones = (
+        planning_documents()
+    )
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        RouteProvider(model, travel),
+        travel,
+        scheduler,
+        (item["nodeId"] for item in traffic_zones["recoveryNodes"]),
+    )
+    incoming = topology.edges["fork:edge-199"]
+    outgoing = topology.edges["fork:edge-137"]
+    incoming_heading = travel.motion_phases(
+        incoming, LoadState.EMPTY
+    ).travel_end_heading_rad
+
+    actions = planner._edge_motion_actions(
+        outgoing,
+        LoadState.EMPTY,
+        start_offset_ms=0,
+        entry_heading_rad=incoming_heading,
+        previous_edge_id=incoming["id"],
+        terminal=False,
+    )
+    rotations = [action for action in actions if action.kind is SegmentKind.ROTATE]
+
+    assert len(rotations) == 1
+    transition = rotations[0]
+    assert transition.command_payload["phase"] == "transition"
+    assert transition.command_payload["incomingEdgeId"] == incoming["id"]
+    assert transition.command_payload["outgoingEdgeId"] == outgoing["id"]
+    assert transition.end_offset_ms - transition.start_offset_ms == (
+        travel.rotation_duration_ms(
+            "fork",
+            LoadState.EMPTY,
+            incoming_heading,
+            travel.motion_phases(outgoing, LoadState.EMPTY).travel_start_heading_rad,
+        )
+    )
+    rotation_resource = topology.rotation_resources[
+        transition.command_payload["rotationId"]
+    ]["ownResource"]
+    assert rotation_resource in transition.resources
+
+
+def test_arbitrary_reported_heading_uses_conservative_fallback_rotation() -> None:
+    model, conflicts, workstations, profiles, scheduler, traffic_zones = (
+        planning_documents()
+    )
+    topology = MapTopology(model, conflicts, workstations, traffic_zones)
+    travel = EdgeTravelTimeModel(
+        model, profiles, scheduler["planner"]["timeQuantumMs"]
+    )
+    planner = ContinuousTimeSippPlanner(
+        topology,
+        RouteProvider(model, travel),
+        travel,
+        scheduler,
+        (item["nodeId"] for item in traffic_zones["recoveryNodes"]),
+    )
+    edge = topology.edges["fork:edge-323"]
+
+    actions = planner._edge_motion_actions(
+        edge,
+        LoadState.EMPTY,
+        start_offset_ms=0,
+        entry_heading_rad=0.0,
+        terminal=True,
+    )
+    rotation = next(
+        action for action in actions if action.kind is SegmentKind.ROTATE
+    )
+    resource = topology.rotation_resources[
+        rotation.command_payload["rotationId"]
+    ]
+
+    assert resource["arbitraryHeadingFallback"] is True
+    assert resource["ownResource"] in rotation.resources
 
 
 def test_candidate_routes_follow_the_vehicle_directed_subgraph() -> None:

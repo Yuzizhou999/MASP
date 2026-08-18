@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "mode": "simulation",
+  "fleet": {
+    "fixedDuringRun": true,
+    "counts": {
+      "fork": 6,
+      "jack": 8
+    },
+    "initialVehiclesFile": "config/initial-vehicles.json"
+  },
+  "serviceDefaults": {
+    "pickupServiceMs": 5000,
+    "dropoffServiceMs": 5000,
+    "workstationCapacity": 1,
+    "blocksTransitDuringService": true,
+    "provisional": true
+  },
+  "planner": {
+    "planningPeriodMs": 5000,
+    "planningHorizonMs": 120000,
+    "executionHorizonMs": 5000,
+    "planningTimeoutMs": 1000,
+    "planningDeadlineGuardMs": 50,
+    "candidateRouteCount": 3,
+    "progressiveRouteSearch": true,
+    "routeExpansionWaitThresholdMs": 5000,
+    "routeBranchAndBound": true,
+    "timeQuantumMs": 100,
+    "maxSippScheduleAttempts": 200,
+    "provisional": true
+  },
+  "assignment": {
+    "maxQueuedTasksPerVehicle": 1,
+    "taskAgeCreditPerSecondMs": 100,
+    "priorityClassCreditMs": 5000,
+    "dueTimePenaltyFactor": 2
+  },
+  "coordination": {
+    "defaultPolicy": "top_k",
+    "priorityCandidateCount": 5,
+    "localConflictPlanning": true,
+    "conflictRouteLookaheadCount": 1,
+    "rlPriorityPrefixCount": 2,
+    "priorityStrategies": [
+      "task_age",
+      "shortest_remaining",
+      "congestion",
+      "previous_order",
+      "random"
+    ],
+    "benchmarkRandomSeeds": [0, 1, 2]
+  },
+  "traffic": {
+    "wait": {
+      "allowOnLM": true,
+      "allowOnAP": false,
+      "allowOnPP": true,
+      "allowOnCP": true,
+      "maxPlannedWaitMs": 60000,
+      "shortTermOnly": true
+    },
+    "reverse": {
+      "mode": "recovery_only",
+      "alongCurrentEdgeAllowed": true,
+      "loadedAllowed": true,
+      "maxDistanceM": 5.0,
+      "maxDurationMs": 15000,
+      "requiresAtomicReservation": true
+    },
+    "deadlock": {
+      "waitGraphEnabled": true,
+      "atomicZoneReservation": true,
+      "starvationAgeStepMs": 5000,
+      "recoveryTimeoutMs": 30000,
+      "maxRecoveryAttempts": 2
+    }
+  },
+  "safety": {
+    "requireCompleteForRealMode": true,
+    "footprintMarginM": null,
+    "localizationErrorM": null,
+    "communicationLatencyMs": null,
+    "fixedClearanceM": null,
+    "guaranteedDecelerationMps2": null,
+    "reservationEntryBufferMs": null,
+    "reservationExitBufferMs": null,
+    "provisional": true
+  },
+  "features": {
+    "batteryScheduling": false
+  }
+}

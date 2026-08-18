@@ -441,6 +441,10 @@ class DeterministicSimulator:
                 "segmentId": segment.segment_id,
             }
             start_event, end_event = {
+                SegmentKind.ROTATE: (
+                    EventType.VEHICLE_ROTATION_STARTED,
+                    EventType.VEHICLE_ROTATION_COMPLETED,
+                ),
                 SegmentKind.TRAVERSE: (
                     EventType.VEHICLE_ENTER_EDGE,
                     EventType.VEHICLE_EXIT_EDGE,
@@ -528,7 +532,47 @@ class DeterministicSimulator:
                 f"vehicle {vehicle.vehicle_id!r} load state differs from its plan",
             )
 
-        if event.event_type is EventType.VEHICLE_ENTER_EDGE:
+        if event.event_type is EventType.VEHICLE_ROTATION_STARTED:
+            if vehicle.current_node_id != segment.start_node_id:
+                raise DomainError(
+                    "execution.rotation.start_mismatch",
+                    "vehicle is not at the rotation node",
+                )
+            if vehicle.state not in {
+                VehicleState.TO_PICKUP,
+                VehicleState.TO_DROPOFF,
+                VehicleState.REPOSITIONING,
+            }:
+                raise DomainError(
+                    "execution.rotation.state_invalid",
+                    "vehicle cannot rotate from its current state",
+                )
+            vehicle.rotation_resume_state = vehicle.state
+            vehicle.transition(VehicleState.ROTATING, event.time_ms)
+        elif event.event_type is EventType.VEHICLE_ROTATION_COMPLETED:
+            resume = vehicle.rotation_resume_state
+            if resume not in {
+                VehicleState.TO_PICKUP,
+                VehicleState.TO_DROPOFF,
+                VehicleState.REPOSITIONING,
+            }:
+                raise DomainError(
+                    "execution.rotation.resume_invalid",
+                    "rotation has no valid resume state",
+                )
+            vehicle.heading_rad = float(segment.command_payload["endHeadingRad"])
+            vehicle.transition(resume, event.time_ms)
+            vehicle.rotation_resume_state = None
+            if (
+                resume is VehicleState.REPOSITIONING
+                and plan is not None
+                and segment is plan.segments[-1]
+            ):
+                vehicle.transition(VehicleState.IDLE, event.time_ms)
+                vehicle.plan_id = None
+                vehicle.plan_revision = None
+                vehicle.committed_until_ms = event.time_ms
+        elif event.event_type is EventType.VEHICLE_ENTER_EDGE:
             if vehicle.current_node_id != segment.start_node_id:
                 raise DomainError(
                     "execution.edge.start_mismatch", "vehicle is not at edge start"
@@ -543,9 +587,8 @@ class DeterministicSimulator:
                 )
             vehicle.current_edge_id = None
             vehicle.current_node_id = segment.end_node_id or ""
-            node = self.topology.nodes[vehicle.current_node_id]
             vehicle.heading_rad = float(
-                node.get("headings", {}).get(vehicle.robot_group, vehicle.heading_rad)
+                segment.command_payload.get("endHeadingRad", vehicle.heading_rad)
             )
             vehicle.revision += 1
             if (
@@ -598,6 +641,7 @@ class DeterministicSimulator:
                 vehicle.committed_until_ms = event.time_ms
 
         segment_completed = event.event_type in {
+            EventType.VEHICLE_ROTATION_COMPLETED,
             EventType.VEHICLE_EXIT_EDGE,
             EventType.VEHICLE_WAIT_ENDED,
             EventType.PICKUP_COMPLETED,

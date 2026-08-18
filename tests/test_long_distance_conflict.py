@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import json
 from itertools import combinations
 from pathlib import Path
@@ -16,6 +17,7 @@ from masp.topology import MapTopology
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_PATH = ROOT / "scenarios" / "rhpp-long-distance-conflict.json"
+HIGH_VOLUME_SCENARIO_PATH = ROOT / "scenarios" / "rhpp-high-volume-long-distance.json"
 
 
 def read_json(path: Path) -> dict:
@@ -109,6 +111,40 @@ def test_long_distance_conflict_scenario_has_dense_route_overlap() -> None:
     assert overlapping_pairs >= 250
     assert cross_group_overlaps >= 120
     assert max(map(len, nx.connected_components(conflict_graph))) == len(task_routes)
+
+
+def test_high_volume_long_distance_scenario_has_two_reachable_balanced_waves() -> None:
+    scenario = read_json(HIGH_VOLUME_SCENARIO_PATH)
+    validate_dispatch_scenario_document(scenario, ROOT / "schemas")
+    model, _, _, profiles, scheduler, _ = documents()
+
+    tasks = scenario["tasks"]
+    assert len(tasks) == 48
+    assert Counter(task["releaseTimeMs"] for task in tasks) == {0: 24, 900_000: 24}
+    assert Counter(task["requiredRobotGroup"] for task in tasks) == {
+        "fork": 24,
+        "jack": 24,
+    }
+    assert len({task["taskId"] for task in tasks}) == len(tasks)
+    assert len({task["payloadId"] for task in tasks}) == len(tasks)
+
+    route_signatures = {
+        release_time_ms: Counter(
+            (
+                task["requiredRobotGroup"],
+                task["pickupNodeId"],
+                task["dropoffNodeId"],
+            )
+            for task in tasks
+            if task["releaseTimeMs"] == release_time_ms
+        )
+        for release_time_ms in (0, 900_000)
+    }
+    assert route_signatures[0] == route_signatures[900_000]
+
+    task_routes = shortest_task_routes(scenario, model, profiles, scheduler)
+    assert len(task_routes) == 48
+    assert min(route.free_flow_travel_ms for _, route in task_routes) >= 200_000
 
 
 def test_long_distance_conflict_online_run_completes_without_collisions() -> None:

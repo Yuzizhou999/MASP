@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from itertools import product
@@ -45,6 +46,19 @@ class PlannedTask:
     diagnostics: SippDiagnostics
 
 
+@dataclass(frozen=True)
+class _ScheduledMotionAction:
+    kind: SegmentKind
+    start_offset_ms: int
+    end_offset_ms: int
+    start_node_id: str
+    end_node_id: str
+    edge_id: str | None
+    load_state: LoadState
+    resources: tuple[str, ...]
+    command_payload: dict[str, Any]
+
+
 class ContinuousTimeSippPlanner:
     def __init__(
         self,
@@ -75,6 +89,12 @@ class ContinuousTimeSippPlanner:
         self.recovery_node_ids = tuple(sorted(set(recovery_node_ids)))
         self._recovery_route_cache: dict[
             tuple[str, str, int], tuple[SpatialRoute, ...]
+        ] = {}
+        self._edge_motion_action_cache: dict[
+            tuple[Any, ...], tuple[_ScheduledMotionAction, ...]
+        ] = {}
+        self._edge_motion_request_cache: dict[
+            tuple[Any, ...], tuple[RelativeReservationRequest, ...]
         ] = {}
 
     def plan_task(
@@ -572,6 +592,8 @@ class ContinuousTimeSippPlanner:
         current_ms = ready_ms
         edge_ids = route.edge_ids
         edge_index = 0
+        entry_heading_rad = self._heading_after_segments(segments, vehicle)
+        previous_edge_id: str | None = None
         while edge_index < len(edge_ids):
             self._check_deadline(deadline_ns)
             edge_id = edge_ids[edge_index]
@@ -593,9 +615,24 @@ class ContinuousTimeSippPlanner:
                     load_state,
                     reservations,
                     horizon_end_ms,
+                    entry_heading_rad=entry_heading_rad,
+                    previous_edge_id=previous_edge_id,
+                    terminal=atomic_end == len(edge_ids) - 1,
                     deadline_ns=deadline_ns,
                 )
-                current_node_id = self.topology.edges[atomic_edge_ids[-1]]["end"]
+                last_edge_id = atomic_edge_ids[-1]
+                last_edge = self.topology.edges[last_edge_id]
+                current_node_id = last_edge["end"]
+                if atomic_end == len(edge_ids) - 1:
+                    entry_heading_rad = self.travel_times.motion_phases(
+                        last_edge, load_state
+                    ).end_heading_rad
+                    previous_edge_id = None
+                else:
+                    entry_heading_rad = self.travel_times.motion_phases(
+                        last_edge, load_state
+                    ).travel_end_heading_rad
+                    previous_edge_id = last_edge_id
                 edge_index = atomic_end + 1
                 continue
 
@@ -615,11 +652,35 @@ class ContinuousTimeSippPlanner:
                 load_state,
                 reservations,
                 horizon_end_ms,
+                entry_heading_rad=entry_heading_rad,
+                previous_edge_id=previous_edge_id,
+                terminal=edge_index == len(edge_ids) - 1,
                 deadline_ns=deadline_ns,
             )
             current_node_id = self.topology.edges[edge_id]["end"]
+            phases = self.travel_times.motion_phases(
+                self.topology.edges[edge_id], load_state
+            )
+            if edge_index == len(edge_ids) - 1:
+                entry_heading_rad = phases.end_heading_rad
+                previous_edge_id = None
+            else:
+                entry_heading_rad = phases.travel_end_heading_rad
+                previous_edge_id = edge_id
             edge_index += 1
         return current_ms
+
+    @staticmethod
+    def _heading_after_segments(
+        segments: list[PlanSegment], vehicle: Vehicle
+    ) -> float:
+        for segment in reversed(segments):
+            if segment.kind in {SegmentKind.ROTATE, SegmentKind.TRAVERSE}:
+                try:
+                    return float(segment.command_payload["endHeadingRad"])
+                except (KeyError, TypeError, ValueError):
+                    break
+        return vehicle.heading_rad
 
     def _zone_atomic_end(
         self,
@@ -678,30 +739,39 @@ class ContinuousTimeSippPlanner:
         reservations: ReservationTable,
         horizon_end_ms: int,
         *,
+        entry_heading_rad: float | None = None,
+        previous_edge_id: str | None = None,
+        terminal: bool = True,
         deadline_ns: int | None = None,
     ) -> int:
         self._check_deadline(deadline_ns)
         edge = self.topology.edges[edge_id]
-        duration_ms = self.travel_times.duration_ms(edge, load_state)
-        probe = PlanSegment(
-            segment_id="probe",
-            kind=SegmentKind.TRAVERSE,
-            start_ms=current_ms,
-            end_ms=current_ms + duration_ms,
-            start_node_id=edge["start"],
-            end_node_id=edge["end"],
-            edge_id=edge_id,
-            expected_load_state=load_state,
+        if edge["start"] != current_node_id:
+            raise SippPlanningError(
+                "sipp.route.discontinuous",
+                f"route is discontinuous at edge {edge_id!r}",
+            )
+        actions = self._edge_motion_actions(
+            edge,
+            load_state,
+            start_offset_ms=0,
+            entry_heading_rad=entry_heading_rad,
+            previous_edge_id=previous_edge_id,
+            terminal=terminal,
         )
-        resources = self.topology.derived_resources(probe)
-        departure_ms = self._first_common_start(
-            resources,
+        requests = self._edge_motion_requests(
+            edge,
+            load_state,
+            entry_heading_rad=entry_heading_rad,
+            previous_edge_id=previous_edge_id,
+            terminal=terminal,
+        )
+        availability = reservations.first_available_bundle_start(
+            requests,
             current_ms,
-            duration_ms,
-            vehicle.vehicle_id,
-            reservations,
-            deadline_ns=deadline_ns,
+            vehicle_id=vehicle.vehicle_id,
         )
+        departure_ms = availability.start_ms
         if departure_ms > current_ms:
             self._append_wait(
                 segments,
@@ -713,24 +783,12 @@ class ContinuousTimeSippPlanner:
                 load_state,
                 reservations,
             )
-        arrival_ms = departure_ms + duration_ms
+        arrival_ms = departure_ms + actions[-1].end_offset_ms
         if arrival_ms > horizon_end_ms:
             raise SippPlanningError(
                 "sipp.horizon.exceeded", "route exceeds planning horizon"
             )
-        segments.append(
-            PlanSegment(
-                segment_id=f"segment-{len(segments):04d}",
-                kind=SegmentKind.TRAVERSE,
-                start_ms=departure_ms,
-                end_ms=arrival_ms,
-                start_node_id=edge["start"],
-                end_node_id=edge["end"],
-                edge_id=edge_id,
-                expected_load_state=load_state,
-                resource_ids=resources,
-            )
-        )
+        self._append_motion_actions(segments, actions, departure_ms)
         return arrival_ms
 
     def _schedule_atomic_edges(
@@ -744,42 +802,45 @@ class ContinuousTimeSippPlanner:
         reservations: ReservationTable,
         horizon_end_ms: int,
         *,
+        entry_heading_rad: float | None = None,
+        previous_edge_id: str | None = None,
+        terminal: bool = True,
         deadline_ns: int | None = None,
     ) -> int:
         self._check_deadline(deadline_ns)
         offset_ms = 0
-        scheduled: list[tuple[dict[str, Any], int, int, tuple[str, ...]]] = []
-        requests: list[RelativeReservationRequest] = []
+        scheduled: list[_ScheduledMotionAction] = []
         expected_node_id = current_node_id
-        for edge_id in edge_ids:
+        current_heading_rad = entry_heading_rad
+        incoming_edge_id = previous_edge_id
+        for edge_index, edge_id in enumerate(edge_ids):
             edge = self.topology.edges[edge_id]
             if edge["start"] != expected_node_id:
                 raise SippPlanningError(
                     "sipp.zone.route_discontinuous",
                     f"atomic zone route is discontinuous at edge {edge_id!r}",
                 )
-            duration_ms = self.travel_times.duration_ms(edge, load_state)
-            probe = PlanSegment(
-                segment_id="probe",
-                kind=SegmentKind.TRAVERSE,
-                start_ms=offset_ms,
-                end_ms=offset_ms + duration_ms,
-                start_node_id=edge["start"],
-                end_node_id=edge["end"],
-                edge_id=edge_id,
-                expected_load_state=load_state,
+            actions = self._edge_motion_actions(
+                edge,
+                load_state,
+                start_offset_ms=offset_ms,
+                entry_heading_rad=current_heading_rad,
+                previous_edge_id=incoming_edge_id,
+                terminal=terminal and edge_index == len(edge_ids) - 1,
             )
-            resources = self.topology.derived_resources(probe)
-            scheduled.append((edge, offset_ms, offset_ms + duration_ms, resources))
-            requests.extend(
-                RelativeReservationRequest(resource_id, offset_ms, offset_ms + duration_ms)
-                for resource_id in resources
-            )
-            offset_ms += duration_ms
+            scheduled.extend(actions)
+            offset_ms = actions[-1].end_offset_ms
             expected_node_id = edge["end"]
+            phases = self.travel_times.motion_phases(edge, load_state)
+            if terminal and edge_index == len(edge_ids) - 1:
+                current_heading_rad = phases.end_heading_rad
+                incoming_edge_id = None
+            else:
+                current_heading_rad = phases.travel_end_heading_rad
+                incoming_edge_id = edge_id
 
         availability = reservations.first_available_bundle_start(
-            requests,
+            self._motion_requests(scheduled),
             ready_ms,
             vehicle_id=vehicle.vehicle_id,
         )
@@ -799,21 +860,282 @@ class ContinuousTimeSippPlanner:
             raise SippPlanningError(
                 "sipp.horizon.exceeded", "atomic zone traversal exceeds planning horizon"
             )
-        for edge, start_offset, end_offset, resources in scheduled:
+        self._append_motion_actions(segments, scheduled, availability.start_ms)
+        return completion_ms
+
+    def _edge_motion_actions(
+        self,
+        edge: dict[str, Any],
+        load_state: LoadState,
+        *,
+        start_offset_ms: int,
+        entry_heading_rad: float | None = None,
+        previous_edge_id: str | None = None,
+        terminal: bool = True,
+    ) -> tuple[_ScheduledMotionAction, ...]:
+        phases = self.travel_times.motion_phases(edge, load_state)
+        entry_heading_rad = (
+            phases.start_heading_rad
+            if entry_heading_rad is None
+            else float(entry_heading_rad)
+        )
+        cache_key = self._edge_motion_cache_key(
+            edge,
+            load_state,
+            entry_heading_rad,
+            previous_edge_id,
+            terminal,
+        )
+        cached = self._edge_motion_action_cache.get(cache_key)
+        if cached is not None:
+            return self._shift_motion_actions(cached, start_offset_ms)
+
+        actions: list[_ScheduledMotionAction] = []
+        offset_ms = 0
+
+        def append_rotation(
+            phase: str,
+            node_id: str,
+            duration_ms: int,
+            start_heading_rad: float,
+            end_heading_rad: float,
+        ) -> None:
+            nonlocal offset_ms
+            if duration_ms <= 0:
+                return
+            rotation_id = self.topology.rotation_id_for_headings(
+                node_id,
+                edge["robotGroup"],
+                start_heading_rad,
+                end_heading_rad,
+            )
+            if rotation_id is None:
+                rotation_id = self.topology.fallback_rotation_id(
+                    node_id, edge["robotGroup"]
+                )
+            if rotation_id is None:
+                raise SippPlanningError(
+                    "sipp.rotation.resource_missing",
+                    f"edge {edge['id']!r} has no {phase} rotation resource for "
+                    f"headings {start_heading_rad!r} -> {end_heading_rad!r}",
+                )
+            command_payload = {
+                "rotationId": rotation_id,
+                "phase": phase,
+                "edgeId": edge["id"],
+                "startHeadingRad": start_heading_rad,
+                "endHeadingRad": end_heading_rad,
+            }
+            if phase == "transition":
+                command_payload.update(
+                    {
+                        "incomingEdgeId": previous_edge_id,
+                        "outgoingEdgeId": edge["id"],
+                    }
+                )
+            probe = PlanSegment(
+                segment_id="rotation-probe",
+                kind=SegmentKind.ROTATE,
+                start_ms=offset_ms,
+                end_ms=offset_ms + duration_ms,
+                start_node_id=node_id,
+                end_node_id=node_id,
+                edge_id=None,
+                expected_load_state=load_state,
+                command_payload=command_payload,
+            )
+            actions.append(
+                _ScheduledMotionAction(
+                    kind=SegmentKind.ROTATE,
+                    start_offset_ms=offset_ms,
+                    end_offset_ms=offset_ms + duration_ms,
+                    start_node_id=node_id,
+                    end_node_id=node_id,
+                    edge_id=None,
+                    load_state=load_state,
+                    resources=self.topology.derived_resources(probe),
+                    command_payload=command_payload,
+                )
+            )
+            offset_ms += duration_ms
+
+        append_rotation(
+            "transition" if previous_edge_id is not None else "start",
+            edge["start"],
+            (
+                phases.start_rotation_ms
+                if previous_edge_id is None
+                and self._headings_equal(entry_heading_rad, phases.start_heading_rad)
+                else self.travel_times.rotation_duration_ms(
+                    edge["robotGroup"],
+                    load_state,
+                    entry_heading_rad,
+                    phases.travel_start_heading_rad,
+                )
+            ),
+            entry_heading_rad,
+            phases.travel_start_heading_rad,
+        )
+        traverse_probe = PlanSegment(
+            segment_id="traverse-probe",
+            kind=SegmentKind.TRAVERSE,
+            start_ms=offset_ms,
+            end_ms=offset_ms + phases.linear_ms,
+            start_node_id=edge["start"],
+            end_node_id=edge["end"],
+            edge_id=edge["id"],
+            expected_load_state=load_state,
+        )
+        traverse_payload = {
+            "startHeadingRad": phases.travel_start_heading_rad,
+            "endHeadingRad": phases.travel_end_heading_rad,
+        }
+        actions.append(
+            _ScheduledMotionAction(
+                kind=SegmentKind.TRAVERSE,
+                start_offset_ms=offset_ms,
+                end_offset_ms=offset_ms + phases.linear_ms,
+                start_node_id=edge["start"],
+                end_node_id=edge["end"],
+                edge_id=edge["id"],
+                load_state=load_state,
+                resources=self.topology.derived_resources(traverse_probe),
+                command_payload=traverse_payload,
+            )
+        )
+        offset_ms += phases.linear_ms
+        if terminal:
+            append_rotation(
+                "end",
+                edge["end"],
+                phases.end_rotation_ms,
+                phases.travel_end_heading_rad,
+                phases.end_heading_rad,
+            )
+        result = tuple(actions)
+        self._edge_motion_action_cache[cache_key] = result
+        return self._shift_motion_actions(result, start_offset_ms)
+
+    def _edge_motion_requests(
+        self,
+        edge: dict[str, Any],
+        load_state: LoadState,
+        *,
+        entry_heading_rad: float | None = None,
+        previous_edge_id: str | None = None,
+        terminal: bool = True,
+    ) -> tuple[RelativeReservationRequest, ...]:
+        phases = self.travel_times.motion_phases(edge, load_state)
+        entry_heading_rad = (
+            phases.start_heading_rad
+            if entry_heading_rad is None
+            else float(entry_heading_rad)
+        )
+        cache_key = self._edge_motion_cache_key(
+            edge,
+            load_state,
+            entry_heading_rad,
+            previous_edge_id,
+            terminal,
+        )
+        cached = self._edge_motion_request_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        actions = self._edge_motion_actions(
+            edge,
+            load_state,
+            start_offset_ms=0,
+            entry_heading_rad=entry_heading_rad,
+            previous_edge_id=previous_edge_id,
+            terminal=terminal,
+        )
+        result = self._motion_requests(actions)
+        self._edge_motion_request_cache[cache_key] = result
+        return result
+
+    @staticmethod
+    def _normalized_heading(heading_rad: float) -> float:
+        result = (float(heading_rad) + math.pi) % (2.0 * math.pi) - math.pi
+        return 0.0 if abs(result) < 1e-9 else result
+
+    @classmethod
+    def _headings_equal(cls, left_rad: float, right_rad: float) -> bool:
+        return abs(cls._normalized_heading(left_rad - right_rad)) < 1e-9
+
+    @classmethod
+    def _edge_motion_cache_key(
+        cls,
+        edge: dict[str, Any],
+        load_state: LoadState,
+        entry_heading_rad: float,
+        previous_edge_id: str | None,
+        terminal: bool,
+    ) -> tuple[Any, ...]:
+        return (
+            edge["id"],
+            load_state,
+            round(cls._normalized_heading(entry_heading_rad), 9),
+            previous_edge_id,
+            terminal,
+        )
+
+    @staticmethod
+    def _shift_motion_actions(
+        actions: tuple[_ScheduledMotionAction, ...],
+        offset_ms: int,
+    ) -> tuple[_ScheduledMotionAction, ...]:
+        if offset_ms == 0:
+            return actions
+        return tuple(
+            _ScheduledMotionAction(
+                kind=action.kind,
+                start_offset_ms=action.start_offset_ms + offset_ms,
+                end_offset_ms=action.end_offset_ms + offset_ms,
+                start_node_id=action.start_node_id,
+                end_node_id=action.end_node_id,
+                edge_id=action.edge_id,
+                load_state=action.load_state,
+                resources=action.resources,
+                command_payload=action.command_payload,
+            )
+            for action in actions
+        )
+
+    @staticmethod
+    def _motion_requests(
+        actions: Iterable[_ScheduledMotionAction],
+    ) -> tuple[RelativeReservationRequest, ...]:
+        return tuple(
+            RelativeReservationRequest(
+                resource_id,
+                action.start_offset_ms,
+                action.end_offset_ms,
+            )
+            for action in actions
+            for resource_id in action.resources
+        )
+
+    @staticmethod
+    def _append_motion_actions(
+        segments: list[PlanSegment],
+        actions: Iterable[_ScheduledMotionAction],
+        bundle_start_ms: int,
+    ) -> None:
+        for action in actions:
             segments.append(
                 PlanSegment(
                     segment_id=f"segment-{len(segments):04d}",
-                    kind=SegmentKind.TRAVERSE,
-                    start_ms=availability.start_ms + start_offset,
-                    end_ms=availability.start_ms + end_offset,
-                    start_node_id=edge["start"],
-                    end_node_id=edge["end"],
-                    edge_id=edge["id"],
-                    expected_load_state=load_state,
-                    resource_ids=resources,
+                    kind=action.kind,
+                    start_ms=bundle_start_ms + action.start_offset_ms,
+                    end_ms=bundle_start_ms + action.end_offset_ms,
+                    start_node_id=action.start_node_id,
+                    end_node_id=action.end_node_id,
+                    edge_id=action.edge_id,
+                    expected_load_state=action.load_state,
+                    resource_ids=action.resources,
+                    command_payload=action.command_payload,
                 )
             )
-        return completion_ms
 
     # 排服务，先找服务资源的空闲时刻。
     # 如果"到达时服务点还被占着"——不在 AP 上等，直接抛错并建议延迟

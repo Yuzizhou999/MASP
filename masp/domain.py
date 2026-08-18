@@ -34,6 +34,7 @@ class VehicleState(str, Enum):
     DROPPING = "DROPPING"
     REPOSITIONING = "REPOSITIONING"
     WAITING = "WAITING"
+    ROTATING = "ROTATING"
     REVERSING = "REVERSING"
     CHARGING = "CHARGING"
     FAULT = "FAULT"
@@ -46,6 +47,7 @@ class LoadState(str, Enum):
 
 # 计划段
 class SegmentKind(str, Enum):
+    ROTATE = "rotate"
     TRAVERSE = "traverse"
     WAIT = "wait"
     PICKUP = "pickup"
@@ -78,6 +80,7 @@ VEHICLE_TRANSITIONS: dict[VehicleState, set[VehicleState]] = {
     VehicleState.TO_PICKUP: {
         VehicleState.PICKING,
         VehicleState.WAITING,
+        VehicleState.ROTATING,
         VehicleState.REVERSING,
         VehicleState.FAULT,
     },
@@ -85,6 +88,7 @@ VEHICLE_TRANSITIONS: dict[VehicleState, set[VehicleState]] = {
     VehicleState.TO_DROPOFF: {
         VehicleState.DROPPING,
         VehicleState.WAITING,
+        VehicleState.ROTATING,
         VehicleState.REVERSING,
         VehicleState.FAULT,
     },
@@ -96,9 +100,16 @@ VEHICLE_TRANSITIONS: dict[VehicleState, set[VehicleState]] = {
     VehicleState.REPOSITIONING: {
         VehicleState.IDLE,
         VehicleState.WAITING,
+        VehicleState.ROTATING,
         VehicleState.FAULT,
     },
     VehicleState.WAITING: {
+        VehicleState.TO_PICKUP,
+        VehicleState.TO_DROPOFF,
+        VehicleState.REPOSITIONING,
+        VehicleState.FAULT,
+    },
+    VehicleState.ROTATING: {
         VehicleState.TO_PICKUP,
         VehicleState.TO_DROPOFF,
         VehicleState.REPOSITIONING,
@@ -218,6 +229,7 @@ class Vehicle:
     state_changed_at_ms: int = 0
     state_durations_ms: Counter[str] = field(default_factory=Counter)
     waiting_resume_state: VehicleState | None = None
+    rotation_resume_state: VehicleState | None = None
 
     def transition(self, new_state: VehicleState, at_ms: int) -> None:
         if at_ms < self.state_changed_at_ms:

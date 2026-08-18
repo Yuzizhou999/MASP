@@ -28,6 +28,7 @@ class ValidatedPlan:
         rows: list[Reservation] = []
         for segment in self.plan.segments:
             kind = {
+                SegmentKind.ROTATE: "rotation",
                 SegmentKind.TRAVERSE: "transit",
                 SegmentKind.WAIT: "wait",
                 SegmentKind.PICKUP: "service",
@@ -185,7 +186,31 @@ class PlanValidator:
                     f"segment {segment.segment_id!r} expects the wrong load state",
                 )
 
-            if segment.kind is SegmentKind.TRAVERSE:
+            if segment.kind is SegmentKind.ROTATE:
+                if (
+                    segment.start_node_id != current_node_id
+                    or segment.end_node_id != current_node_id
+                ):
+                    raise DomainError(
+                        "plan.rotation.node",
+                        f"rotation segment {segment.segment_id!r} must remain at the current node",
+                    )
+                payload = segment.command_payload
+                if not payload.get("rotationId"):
+                    raise DomainError(
+                        "plan.rotation.resource_missing",
+                        f"rotation segment {segment.segment_id!r} has no rotation resource",
+                    )
+                try:
+                    float(payload["startHeadingRad"])
+                    float(payload["endHeadingRad"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise DomainError(
+                        "plan.rotation.heading_invalid",
+                        f"rotation segment {segment.segment_id!r} has invalid headings",
+                    ) from exc
+
+            elif segment.kind is SegmentKind.TRAVERSE:
                 edge = self.topology.edges.get(segment.edge_id or "")
                 if edge is None:
                     raise DomainError(

@@ -212,16 +212,148 @@ def validate_repository(
     pair_by_id = {item["resourceId"]: item for item in conflicts["conflictPairs"]}
     if len(pair_by_id) != len(conflicts["conflictPairs"]):
         issues.append(ValidationIssue("error", "conflicts.pair.duplicate", "duplicate conflict pair resource id"))
+    rotation_resources = {
+        item["rotationId"]: item for item in conflicts.get("rotationResources", [])
+    }
+    if len(rotation_resources) != len(conflicts.get("rotationResources", [])):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "conflicts.rotation.duplicate",
+                "duplicate rotation resource id",
+            )
+        )
+    motion_pairs = conflicts.get("motionConflictPairs", [])
+    motion_pair_by_id = {item["resourceId"]: item for item in motion_pairs}
+    if len(motion_pair_by_id) != len(motion_pairs):
+        issues.append(
+            ValidationIssue(
+                "error",
+                "conflicts.motion_pair.duplicate",
+                "duplicate motion conflict resource id",
+            )
+        )
     references: dict[str, set[str]] = defaultdict(set)
     for edge_id, resource in edge_resources.items():
         for resource_id in resource["conflictResources"]:
             references[resource_id].add(edge_id)
+    rotation_references: dict[str, set[str]] = defaultdict(set)
+    fallback_rotations: dict[tuple[str, str], str] = {}
+    for rotation_id, resource in rotation_resources.items():
+        if resource["nodeId"] not in nodes_by_id:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "conflicts.rotation.node",
+                    f"rotation {rotation_id!r} references an unknown node",
+                )
+            )
+        node = nodes_by_id.get(resource["nodeId"])
+        if (
+            node is not None
+            and resource["robotGroup"] not in node["allowedRobotGroups"]
+        ):
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "conflicts.rotation.robot_group",
+                    f"rotation {rotation_id!r} uses an unsupported robot group",
+                )
+            )
+        if resource.get("arbitraryHeadingFallback", False):
+            fallback_key = (resource["nodeId"], resource["robotGroup"])
+            if fallback_key in fallback_rotations:
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "conflicts.rotation.fallback_duplicate",
+                        f"multiple fallback rotations exist for {fallback_key!r}",
+                    )
+                )
+            fallback_rotations[fallback_key] = rotation_id
+            if resource.get("edgePhases") or resource.get("edgeTransitions"):
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "conflicts.rotation.fallback_references",
+                        f"fallback rotation {rotation_id!r} must not reference edges",
+                    )
+                )
+        for reference in resource.get("edgePhases", []):
+            if reference["edgeId"] not in edges_by_id or reference["phase"] not in {"start", "end"}:
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "conflicts.rotation.edge_phase",
+                        f"rotation {rotation_id!r} has an invalid edge phase",
+                    )
+                )
+        for reference in resource.get("edgeTransitions", []):
+            incoming = edges_by_id.get(reference.get("incomingEdgeId"))
+            outgoing = edges_by_id.get(reference.get("outgoingEdgeId"))
+            valid = (
+                incoming is not None
+                and outgoing is not None
+                and incoming["end"] == resource["nodeId"]
+                and outgoing["start"] == resource["nodeId"]
+                and incoming["robotGroup"] == resource["robotGroup"]
+                and outgoing["robotGroup"] == resource["robotGroup"]
+            )
+            if not valid:
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "conflicts.rotation.edge_transition",
+                        f"rotation {rotation_id!r} has an invalid edge transition",
+                    )
+                )
+        for resource_id in resource["conflictResources"]:
+            rotation_references[resource_id].add(rotation_id)
+    expected_fallbacks = {
+        (node["id"], group)
+        for node in nodes
+        for group in node["allowedRobotGroups"]
+        if node["waitPolicyByGroup"][group]["allowed"]
+    }
+    if set(fallback_rotations) != expected_fallbacks:
+        issues.append(
+            ValidationIssue(
+                "error",
+                "conflicts.rotation.fallback_coverage",
+                "fallback rotations must cover every allowed node and robot group",
+            )
+        )
     for resource_id, pair in pair_by_id.items():
         pair_edges = {pair["edgeA"], pair["edgeB"]}
         if not pair_edges <= set(edges_by_id):
             issues.append(ValidationIssue("error", "conflicts.pair.edge", f"{resource_id!r} references an unknown edge"))
         if references.get(resource_id, set()) != pair_edges:
             issues.append(ValidationIssue("error", "conflicts.pair.references", f"{resource_id!r} is not referenced by exactly its two edges"))
+    for resource_id, pair in motion_pair_by_id.items():
+        if pair["kind"] == "edge-rotation":
+            edge_id = pair["edgeId"]
+            rotation_id = pair["rotationId"]
+            valid = (
+                edge_id in edges_by_id
+                and rotation_id in rotation_resources
+                and references.get(resource_id, set()) == {edge_id}
+                and rotation_references.get(resource_id, set()) == {rotation_id}
+            )
+        else:
+            rotations = {pair["rotationA"], pair["rotationB"]}
+            valid = (
+                rotations <= set(rotation_resources)
+                and not references.get(resource_id)
+                and rotation_references.get(resource_id, set()) == rotations
+            )
+        if not valid:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "conflicts.motion_pair.references",
+                    f"{resource_id!r} has inconsistent motion references",
+                )
+            )
 
     configured_counts = scheduler["fleet"]["counts"]
     actual_counts = Counter(item["robotGroup"] for item in vehicles["vehicles"])
@@ -449,6 +581,8 @@ def validate_repository(
         "nodeCount": len(nodes),
         "edgeCount": len(edges),
         "conflictPairCount": len(conflicts["conflictPairs"]),
+        "rotationResourceCount": len(rotation_resources),
+        "motionConflictPairCount": len(motion_pairs),
         "workstationCount": len(workstations["workstations"]),
         "vehicleCount": len(vehicles["vehicles"]),
         "trafficZoneCount": len(traffic_zones["zones"]),

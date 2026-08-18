@@ -45,7 +45,7 @@
         ],
         "properties": {
           "id": {"type": "string", "minLength": 1},
-          "kind": {"enum": ["traverse", "wait", "pickup", "dropoff"]},
+          "kind": {"enum": ["rotate", "traverse", "wait", "pickup", "dropoff"]},
           "startMs": {"type": "integer", "minimum": 0},
           "endMs": {"type": "integer", "minimum": 1},
           "startNodeId": {"type": "string", "minLength": 1},

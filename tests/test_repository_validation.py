@@ -41,6 +41,8 @@ def test_repository_repository_is_valid_for_simulation(
         "nodeCount": 552,
         "edgeCount": 1204,
         "conflictPairCount": 6266,
+        "rotationResourceCount": 2859,
+        "motionConflictPairCount": 28959,
         "workstationCount": 133,
         "vehicleCount": 14,
         "trafficZoneCount": 1,

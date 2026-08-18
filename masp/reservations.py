@@ -175,16 +175,11 @@ class ReservationTable:
         if end_ms <= start_ms:
             raise ValueError("overlap query requires end_ms > start_ms")
         return tuple(
-            sorted(
-                (
-                    item
-                    for item in self._by_resource.get(resource_id, ())
-                    if item.start_ms < end_ms
-                    and start_ms < item.end_ms
-                    and not self._is_exempt_for(item, vehicle_id)
-                ),
-                key=self._sort_key,
-            )
+            item
+            for item in self._by_resource.get(resource_id, ())
+            if item.start_ms < end_ms
+            and start_ms < item.end_ms
+            and not self._is_exempt_for(item, vehicle_id)
         )
 
     # 找出所有和候选预留冲突的已有预留
@@ -240,16 +235,7 @@ class ReservationTable:
     ) -> BundleAvailability:
         if not_before_ms < 0:
             raise ValueError("not_before_ms must be non-negative")
-        ordered = tuple(
-            sorted(
-                requests,
-                key=lambda item: (
-                    item.start_offset_ms,
-                    item.end_offset_ms,
-                    item.resource_id,
-                ),
-            )
-        )
+        ordered = tuple(requests)
         candidate = not_before_ms
         observed: dict[tuple[str, int, int, str], ReservationBlocker] = {}
         while True:

@@ -233,11 +233,11 @@ class PriorityObservationEncoder:
     def _route_resources(self, edge_ids: Any) -> set[str]:
         resources: set[str] = set()
         for edge_id in edge_ids:
-            edge_resource = self.topology.edge_resources.get(edge_id)
-            if edge_resource is None:
+            if edge_id not in self.topology.edge_resources:
                 continue
-            resources.add(edge_resource["ownResource"])
-            resources.update(edge_resource["conflictResources"])
+            resources.update(
+                self.topology.prospective_motion_resources_for_edge(edge_id)
+            )
             edge = self.routes.edges[edge_id]
             resources.add(f"node:{edge['start']}")
             resources.add(f"node:{edge['end']}")
@@ -327,8 +327,7 @@ class PriorityObservationEncoder:
         dx = float(end.get("x", 0.0)) - float(start.get("x", 0.0))
         dy = float(end.get("y", 0.0)) - float(start.get("y", 0.0))
         angle = math.atan2(dy, dx)
-        resource = self.topology.edge_resources.get(edge_id, {})
-        conflicts = resource.get("conflictResources", ())
+        conflicts = self.topology.prospective_motion_resources_for_edge(edge_id)
         duration_ms = self.routes.travel_times.duration_ms(edge, load_state)
         narrow = self.topology.traffic_zones.zone_for_edge(edge_id) is not None
         return np.asarray(
